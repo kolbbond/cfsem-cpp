@@ -11,7 +11,7 @@ Add to your interface functions
 Download the repo with the cfsem-rs library 
 
 ##
-    `git clone --recursive git@github.com:kolbbond/cfsem-cpp.git`
+    git clone --recursive git@github.com:kolbbond/cfsem-cpp.git
 
 Build using the regular cmake process
 ##
