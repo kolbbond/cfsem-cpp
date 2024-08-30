@@ -1,0 +1,3 @@
+[submodule "cfsem-rs"]
+	path = cfsem-rs
+	url = git@github.com:kolbbond/cfsem-rs.git
