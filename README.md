@@ -1,4 +1,4 @@
-Leverage the [Corrosion](https://github.com/corrosion-rs/corrosion)
+Leverage [Corrosion](https://github.com/corrosion-rs/corrosion)
 to build the cfsem-rs library with cmake
 
 ## Letting Rust functions be called from C
