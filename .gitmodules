@@ -1,3 +1,3 @@
-[submodule "cfsem-rs"]
-	path = cfsem-rs
-	url = git@github.com:kolbbond/cfsem-rs.git
+[submodule "cfsem-py"]
+	path = cfsem-py
+	url = https://github.com/kolbbond/cfsem-py.git

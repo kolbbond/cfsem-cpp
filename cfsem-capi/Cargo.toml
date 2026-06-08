@@ -1,0 +1,17 @@
+[package]
+name = "cfsem-capi"
+version = "0.1.0"
+edition = "2021"
+description = "C-ABI shim exposing cfsem functions to C/C++ via extern \"C\"."
+license = "MIT"
+
+[lib]
+name = "cfsem_capi"
+# staticlib -> libcfsem_capi.a, linked directly by C/C++ consumers (incl. goose).
+crate-type = ["staticlib"]
+
+[dependencies]
+# Depend on the merged cfsem crate WITHOUT the python feature, so no pyo3 /
+# Python runtime is linked into the static library. cfsem's default feature set
+# is already empty; default-features = false makes the intent explicit.
+cfsem = { path = "../cfsem-py", default-features = false }
