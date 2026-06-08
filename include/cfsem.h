@@ -7,6 +7,16 @@
  *
  * For an ergonomic C++ surface, prefer cfsem.hpp, which wraps these in
  * `namespace cfsem`.
+ *
+ * Data layout: coordinate arrays are INTERLEAVED 3xN, i.e.
+ *   [x0,y0,z0, x1,y1,z1, ...], matching an Armadillo arma::Mat<double>(3, N)
+ *   in memory (column-major). Pass mat.memptr() directly.
+ *
+ * Status codes (functions returning int):
+ *   0  success
+ *   1  internal cfsem error (e.g. length mismatch)
+ *   2  a required pointer was NULL
+ *   3  a panic was caught at the FFI boundary
  */
 #ifndef CFSEM_H
 #define CFSEM_H
@@ -26,25 +36,35 @@ double cfsem_ellipk(double m);
  * Biot-Savart magnetic flux density (T) from many straight current filaments at
  * many observation points.
  *
- * Observation points  (each array length n_obs): xp, yp, zp        [m]
- * Filament segments    (each array length n_fil):
- *     xfil, yfil, zfil  — segment start coordinates                [m]
- *     dlx,  dly,  dlz   — segment length deltas (end = start+delta) [m]
- *     ifil              — segment current                           [A]
- *     wire_radius       — conductor (half-)thickness                [m]
- * Outputs (caller-allocated, each length n_obs): bx, by, bz        [T]
+ *   rs_obs      [in]  interleaved observation coords,        length 3*n_obs   [m]
+ *   n_obs       [in]  number of observation points
+ *   rs_fil      [in]  interleaved filament segment START,    length 3*n_fil   [m]
+ *   drs_fil     [in]  interleaved filament segment DELTA,    length 3*n_fil   [m]
+ *                     (segment end = start + delta)
+ *   ifil        [in]  filament currents,                     length n_fil     [A]
+ *   wire_radius [in]  conductor (half-)thickness / softening, length n_fil    [m]
+ *   n_fil       [in]  number of filament segments
+ *   b_out       [out] interleaved Bx,By,Bz, caller-allocated, length 3*n_obs  [T]
  *
- * Returns: 0 on success, 1 on an internal cfsem error (e.g. length mismatch),
- *          2 if any required pointer is NULL.
- *
- * Output buffers must not alias the inputs or each other.
+ * b_out must not alias the inputs. Returns a status code (see file header).
  */
 int cfsem_flux_density_linear_filament(
-    const double* xp, const double* yp, const double* zp, size_t n_obs,
-    const double* xfil, const double* yfil, const double* zfil,
-    const double* dlx, const double* dly, const double* dlz,
+    const double* rs_obs, size_t n_obs,
+    const double* rs_fil, const double* drs_fil,
     const double* ifil, const double* wire_radius, size_t n_fil,
-    double* bx, double* by, double* bz);
+    double* b_out);
+
+/*
+ * Magnetic vector potential (V*s/m) from many straight current filaments at many
+ * observation points. Same argument contract as
+ * cfsem_flux_density_linear_filament; a_out receives interleaved Ax,Ay,Az,
+ * length 3*n_obs.
+ */
+int cfsem_vector_potential_linear_filament(
+    const double* rs_obs, size_t n_obs,
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, size_t n_fil,
+    double* a_out);
 
 #ifdef __cplusplus
 } /* extern "C" */
