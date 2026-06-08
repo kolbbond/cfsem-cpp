@@ -15,6 +15,9 @@ cmake_minimum_required(VERSION 3.22)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Emit compile_commands.json so clangd / IDEs resolve include/ correctly.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 project(
   cfsem-cpp
   VERSION 0.1
