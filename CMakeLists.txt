@@ -7,8 +7,8 @@
 #
 # Targets:
 #   cfsem_cpp   INTERFACE library bundling the Rust static lib + headers.
-#               This is what downstream consumers (e.g. goose) link against:
-#                   target_link_libraries(goose PRIVATE cfsem_cpp)
+#               This is what downstream consumers link against:
+#                   target_link_libraries(<consumer> PRIVATE cfsem_cpp)
 #   cfsem-cpp   smoke-test executable (validates the library builds/links/runs).
 cmake_minimum_required(VERSION 3.22)
 
@@ -42,6 +42,17 @@ target_include_directories(cfsem_cpp
                            INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(cfsem_cpp INTERFACE cfsem_capi)
 
+# Namespaced alias for add_subdirectory() consumers, so they can link the
+# idiomatic `cfsem::cpp` instead of the bare target name.
+add_library(cfsem::cpp ALIAS cfsem_cpp)
+
 # Smoke-test executable. Not the deliverable — proves the library links and runs.
-add_executable(${PROJECT_NAME} main.cpp)
-target_link_libraries(${PROJECT_NAME} PRIVATE cfsem_cpp)
+# Only built when cfsem-cpp is the top-level project; a consumer that
+# add_subdirectory()s this repo gets only the `cfsem_cpp` library,
+# not the smoke-test target.
+option(CFSEM_CPP_BUILD_SMOKE_TEST
+       "Build the cfsem-cpp smoke-test executable" ${PROJECT_IS_TOP_LEVEL})
+if(CFSEM_CPP_BUILD_SMOKE_TEST)
+  add_executable(${PROJECT_NAME} main.cpp)
+  target_link_libraries(${PROJECT_NAME} PRIVATE cfsem_cpp)
+endif()

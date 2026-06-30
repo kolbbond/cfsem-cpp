@@ -66,6 +66,27 @@ int cfsem_vector_potential_linear_filament(
     const double* ifil, const double* wire_radius, size_t n_fil,
     double* a_out);
 
+/*
+ * Hierarchical (Barnes-Hut) flux density (T). Same contract as the direct version
+ * plus theta (acceptance angle; smaller = more accurate, slower) and par (nonzero
+ * = parallel). APPROXIMATE — no guaranteed error bound; not for safety field
+ * limits. Tree builder fixed to "longest axis".
+ */
+int cfsem_flux_density_linear_filament_hierarchical(
+    const double* rs_obs, size_t n_obs,
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, size_t n_fil,
+    double theta, int par,
+    double* b_out);
+
+/* Hierarchical (Barnes-Hut) vector potential (V*s/m). Caveats as above. */
+int cfsem_vector_potential_linear_filament_hierarchical(
+    const double* rs_obs, size_t n_obs,
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, size_t n_fil,
+    double theta, int par,
+    double* a_out);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

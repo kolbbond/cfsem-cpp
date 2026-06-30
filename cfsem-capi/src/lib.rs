@@ -8,7 +8,7 @@
 //!
 //! Coordinate arrays use the **interleaved** layout `[x0,y0,z0, x1,y1,z1, ...]`,
 //! which matches an Armadillo `arma::Mat<double>(3, N)` in memory (column-major).
-//! Downstream C++ (e.g. goose) can therefore pass `mat.memptr()` directly with no
+//! Downstream C++ can therefore pass `mat.memptr()` directly with no
 //! transpose. Internally `cfsem` wants structure-of-arrays, so each wrapper
 //! de-interleaves into temporary component vectors (an O(N) copy per call —
 //! acceptable for a validation/reference backend) and re-interleaves the result.
@@ -32,6 +32,10 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
+
+// `BuildMethod` is only `pub` via this `tree` path (the mod-level re-export is
+// crate-private).
+use cfsem::physics::hierarchical::tree::BuildMethod;
 
 /// Signature shared by the linear-filament field functions in `cfsem`
 /// (`flux_density_linear_filament`, `vector_potential_linear_filament`): identical
@@ -124,6 +128,83 @@ pub unsafe extern "C" fn cfsem_vector_potential_linear_filament(
     .unwrap_or(3)
 }
 
+/// Hierarchical (Barnes-Hut) flux density (T). Approximate — `theta` trades
+/// accuracy for speed, no guaranteed bound; not for safety field limits. Wraps
+/// [`cfsem::physics::hierarchical::flux_density_linear_filament_hierarchical`];
+/// see [`linear_filament_field_hierarchical`] for the contract.
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_flux_density_linear_filament_hierarchical(
+    rs_obs: *const f64,
+    n_obs: usize,
+    rs_fil: *const f64,
+    drs_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    theta: f64,
+    par: i32,
+    b_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        linear_filament_field_hierarchical(
+            rs_obs,
+            n_obs,
+            rs_fil,
+            drs_fil,
+            ifil,
+            wire_radius,
+            n_fil,
+            theta,
+            par != 0,
+            b_out,
+            cfsem::physics::hierarchical::flux_density_linear_filament_hierarchical::<f64>,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// Hierarchical (Barnes-Hut) vector potential (V·s/m). Approximate; same caveats
+/// as [`cfsem_flux_density_linear_filament_hierarchical`]. Wraps
+/// [`cfsem::physics::hierarchical::vector_potential_linear_filament_hierarchical`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_vector_potential_linear_filament_hierarchical(
+    rs_obs: *const f64,
+    n_obs: usize,
+    rs_fil: *const f64,
+    drs_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    theta: f64,
+    par: i32,
+    a_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        linear_filament_field_hierarchical(
+            rs_obs,
+            n_obs,
+            rs_fil,
+            drs_fil,
+            ifil,
+            wire_radius,
+            n_fil,
+            theta,
+            par != 0,
+            a_out,
+            cfsem::physics::hierarchical::vector_potential_linear_filament_hierarchical::<f64>,
+        )
+    }))
+    .unwrap_or(3)
+}
+
 /// Shared implementation for the linear-filament field wrappers.
 ///
 /// Validates pointers, de-interleaves the `3xN` inputs into component vectors,
@@ -189,6 +270,95 @@ unsafe fn linear_filament_field(
         (&dlx, &dly, &dlz),
         ifil,
         wire_radius,
+        (&mut ox, &mut oy, &mut oz),
+    );
+    if result.is_err() {
+        return 1;
+    }
+
+    let out = slice::from_raw_parts_mut(out, 3 * n_obs);
+    for i in 0..n_obs {
+        out[3 * i] = ox[i];
+        out[3 * i + 1] = oy[i];
+        out[3 * i + 2] = oz[i];
+    }
+    0
+}
+
+/// Hierarchical counterpart of [`linear_filament_field`]: same de-/re-interleave
+/// contract, plus `theta` and `par`; tree builder fixed to
+/// [`BuildMethod::LongestAxis`].
+///
+/// `R`/`E` are generic because the convenience fn's `Diagnostics`/
+/// `HierarchicalError` are crate-private to `cfsem` — only `Result::is_err` is
+/// read (any error → status `1`).
+///
+/// # Safety
+///
+/// Every pointer must be non-null and point to at least the documented number of
+/// `f64` elements. `out` must not alias the inputs.
+unsafe fn linear_filament_field_hierarchical<R, E, F>(
+    rs_obs: *const f64,
+    n_obs: usize,
+    rs_fil: *const f64,
+    drs_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    theta: f64,
+    par: bool,
+    out: *mut f64,
+    f: F,
+) -> i32
+where
+    F: Fn(
+        (&[f64], &[f64], &[f64]),
+        (&[f64], &[f64], &[f64]),
+        (&[f64], &[f64], &[f64]),
+        &[f64],
+        &[f64],
+        BuildMethod,
+        f64,
+        bool,
+        (&mut [f64], &mut [f64], &mut [f64]),
+    ) -> Result<R, E>,
+{
+    if rs_obs.is_null()
+        || rs_fil.is_null()
+        || drs_fil.is_null()
+        || ifil.is_null()
+        || wire_radius.is_null()
+        || out.is_null()
+    {
+        return 2;
+    }
+
+    // Borrow the raw inputs as slices (interleaved for the 3xN coordinate arrays).
+    let rs_obs = slice::from_raw_parts(rs_obs, 3 * n_obs);
+    let rs_fil = slice::from_raw_parts(rs_fil, 3 * n_fil);
+    let drs_fil = slice::from_raw_parts(drs_fil, 3 * n_fil);
+    let ifil = slice::from_raw_parts(ifil, n_fil);
+    let wire_radius = slice::from_raw_parts(wire_radius, n_fil);
+
+    // De-interleave into the structure-of-arrays form cfsem expects.
+    let (xp, yp, zp) = deinterleave3(rs_obs, n_obs);
+    let (xfil, yfil, zfil) = deinterleave3(rs_fil, n_fil);
+    let (dlx, dly, dlz) = deinterleave3(drs_fil, n_fil);
+
+    // Component output buffers, re-interleaved into `out` after the call.
+    let mut ox = vec![0.0_f64; n_obs];
+    let mut oy = vec![0.0_f64; n_obs];
+    let mut oz = vec![0.0_f64; n_obs];
+
+    let result = f(
+        (&xp, &yp, &zp),
+        (&xfil, &yfil, &zfil),
+        (&dlx, &dly, &dlz),
+        ifil,
+        wire_radius,
+        BuildMethod::LongestAxis,
+        theta,
+        par,
         (&mut ox, &mut oy, &mut oz),
     );
     if result.is_err() {

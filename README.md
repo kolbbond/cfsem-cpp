@@ -3,16 +3,16 @@
 A **C-ABI shim library** over the [`cfsem`](https://github.com/kolbbond/cfsem-py)
 Rust crate (quasi-steady electromagnetics: filamentized Biot-Savart,
 Grad-Shafranov, etc.). It wraps `cfsem`'s Rust functions in `extern "C"` so C and
-C++ code — eventually the `goose` libraries — can link directly against it.
+C++ code can link directly against it.
 
 Built with [Corrosion](https://github.com/corrosion-rs/corrosion), which compiles
 the Rust crates as part of the normal CMake build.
 
 ## Role and scope
 
-cfsem is intended as an **alternative / reference B- and A-field calculator** for
-goose — an *exact direct-summation* Biot-Savart backend to cross-check goose's
-fast-multipole (rat MLFMM) results, and for small problems.
+cfsem is intended as an **alternative / reference B- and A-field calculator** — an
+*exact direct-summation* Biot-Savart backend, suitable for cross-checking a
+fast-multipole (FMM) solver's results, and for small problems.
 
 Two things follow from that:
 
@@ -27,8 +27,8 @@ Two things follow from that:
 ## Data layout
 
 Coordinate arrays use the **interleaved 3×N** layout `[x0,y0,z0, x1,y1,z1, …]`,
-matching an Armadillo `arma::Mat<double>(3, N)` in memory (column-major). goose
-can pass `mat.memptr()` directly — no transpose at the boundary.
+matching an Armadillo `arma::Mat<double>(3, N)` in memory (column-major). A
+consumer can pass `mat.memptr()` directly — no transpose at the boundary.
 
 ## Layout
 
@@ -63,7 +63,7 @@ make
 The first build compiles `cfsem` and its dependencies (`faer`, `nalgebra`,
 `rayon`), so it takes a couple of minutes; later builds are incremental.
 
-## Linking from another project (e.g. goose)
+## Linking from another project
 
 This repo exposes a CMake `INTERFACE` target, `cfsem_cpp`, that bundles the Rust
 static library and the headers. Add this repo (submodule or `add_subdirectory`)
@@ -71,7 +71,7 @@ and link it:
 
 ```cmake
 add_subdirectory(cfsem-cpp)
-target_link_libraries(goose PRIVATE cfsem_cpp)   # gets libcfsem_capi.a + include/
+target_link_libraries(<consumer> PRIVATE cfsem_cpp)   # gets libcfsem_capi.a + include/
 ```
 
 Then in C++ (interleaved 3×N arrays; see `cfsem.h` for the full contract):
@@ -94,8 +94,17 @@ int rc = cfsem::flux_density_linear_filament(
 | Function | Returns |
 | -------- | ------- |
 | `cfsem_ellipk(m)` | complete elliptic integral K(m) (scalar) |
-| `cfsem_flux_density_linear_filament(...)` | B-field (T) from linear filaments |
-| `cfsem_vector_potential_linear_filament(...)` | A-field (V·s/m) from linear filaments |
+| `cfsem_flux_density_linear_filament(...)` | B-field (T) from linear filaments — exact O(N·M) direct sum |
+| `cfsem_vector_potential_linear_filament(...)` | A-field (V·s/m) from linear filaments — exact O(N·M) direct sum |
+| `cfsem_flux_density_linear_filament_hierarchical(..., theta, par, ...)` | B-field (T), **approximate** Barnes-Hut tree sum |
+| `cfsem_vector_potential_linear_filament_hierarchical(..., theta, par, ...)` | A-field (V·s/m), **approximate** Barnes-Hut tree sum |
+
+The `*_hierarchical` variants take the same interleaved-3×N arguments plus a
+Barnes-Hut acceptance angle `theta` (smaller = more accurate, slower) and an `int
+par` flag (nonzero = parallel target evaluation). They are **approximate** — a
+truncated tree method with no guaranteed accuracy bound — so they are a
+performance/scaling path, not for safety-related field limits; validate `theta`
+against the exact direct functions for your configuration.
 
 Status codes: `0` ok · `1` cfsem error (e.g. length mismatch) · `2` null pointer
 · `3` panic caught at the FFI boundary.

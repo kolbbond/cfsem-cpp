@@ -40,6 +40,31 @@ inline int vector_potential_linear_filament(
       rs_obs, n_obs, rs_fil, drs_fil, ifil, wire_radius, n_fil, a_out);
 }
 
+// Hierarchical (Barnes-Hut) flux density (T). Approximate; theta/par as in
+// cfsem.h. Same status-code contract.
+inline int flux_density_linear_filament_hierarchical(
+    const double* rs_obs, std::size_t n_obs,
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, std::size_t n_fil,
+    double theta, int par,
+    double* b_out) {
+  return ::cfsem_flux_density_linear_filament_hierarchical(
+      rs_obs, n_obs, rs_fil, drs_fil, ifil, wire_radius, n_fil, theta, par,
+      b_out);
+}
+
+// Hierarchical (Barnes-Hut) vector potential (V*s/m). Caveats as above.
+inline int vector_potential_linear_filament_hierarchical(
+    const double* rs_obs, std::size_t n_obs,
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, std::size_t n_fil,
+    double theta, int par,
+    double* a_out) {
+  return ::cfsem_vector_potential_linear_filament_hierarchical(
+      rs_obs, n_obs, rs_fil, drs_fil, ifil, wire_radius, n_fil, theta, par,
+      a_out);
+}
+
 } // namespace cfsem
 
 #endif // CFSEM_HPP
