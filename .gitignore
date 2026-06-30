@@ -1,2 +1,10 @@
 build
 target/
+.cache/
+
+# AI agent tooling — kept local, not published
+CLAUDE.md
+AGENTS.md
+.claude/
+.cursor/
+docs/superpowers/

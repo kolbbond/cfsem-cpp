@@ -1,3 +1,3 @@
 [submodule "cfsem-py"]
 	path = cfsem-py
-	url = https://github.com/kolbbond/cfsem-py.git
+	url = https://github.com/cfs-energy/cfsem-py.git

@@ -7,7 +7,7 @@ license = "MIT"
 
 [lib]
 name = "cfsem_capi"
-# staticlib -> libcfsem_capi.a, linked directly by C/C++ consumers (incl. goose).
+# staticlib -> libcfsem_capi.a, linked directly by C/C++ consumers.
 crate-type = ["staticlib"]
 
 [dependencies]
