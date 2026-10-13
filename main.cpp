@@ -115,5 +115,58 @@ int main() {
   std::printf((b_rel < 1e-2 && a_rel < 1e-2)
                   ? "OK\n"
                   : "WARN: hierarchical differs from direct > 1%%\n");
+
+  // Persistent tree: same tree, summaries and walk as the one-shot path, so it
+  // must match it exactly after every current update (both fields, both modes).
+  constexpr std::size_t kObs = 64;
+  std::vector<double> obs(3 * kObs);
+  for (std::size_t j = 0; j < kObs; ++j) {
+    obs[3 * j] = -0.4 * length + 0.8 * length * static_cast<double>(j) / kObs;
+    obs[3 * j + 1] = r * static_cast<double>(1 + j % 5);
+    obs[3 * j + 2] = 0.01 * static_cast<double>(j % 3);
+  }
+  cfsem::lf_tree* tree =
+      cfsem::lf_tree_new(seg_fil.data(), seg_dfil.data(), seg_wr.data(), kSeg);
+  if (tree == nullptr) {
+    std::printf("FAIL: lf_tree_new returned NULL\n");
+    return 1;
+  }
+  std::vector<double> ref(3 * kObs), got(3 * kObs);
+  int mismatches = 0;
+  for (int update = 0; update < 3; ++update) {
+    for (std::size_t s = 0; s < kSeg; ++s) {
+      seg_i[s] = current * std::cos(0.01 * static_cast<double>(s * (update + 1)));
+    }
+    if (cfsem::lf_tree_set_currents(tree, seg_i.data()) != 0) {
+      std::printf("FAIL: lf_tree_set_currents\n");
+      return 1;
+    }
+    for (int par = 0; par < 2; ++par) {
+      int rc = cfsem::vector_potential_linear_filament_hierarchical(
+          obs.data(), kObs, seg_fil.data(), seg_dfil.data(), seg_i.data(),
+          seg_wr.data(), kSeg, theta, par, ref.data());
+      rc |= cfsem::lf_tree_vector_potential(tree, obs.data(), kObs, theta, par,
+                                            got.data());
+      mismatches += (rc != 0 || ref != got);
+      rc = cfsem::flux_density_linear_filament_hierarchical(
+          obs.data(), kObs, seg_fil.data(), seg_dfil.data(), seg_i.data(),
+          seg_wr.data(), kSeg, theta, par, ref.data());
+      rc |= cfsem::lf_tree_flux_density(tree, obs.data(), kObs, theta, par,
+                                        got.data());
+      mismatches += (rc != 0 || ref != got);
+    }
+  }
+  double build_s = 0.0, summary_s = 0.0, eval_s = 0.0;
+  cfsem::lf_tree_timings(tree, &build_s, &summary_s, &eval_s);
+  cfsem::lf_tree_free(tree);
+  std::printf("persistent tree vs one-shot (3 current updates x A/B x "
+              "serial/par): %d mismatches; build %.2e s, summary %.2e s, "
+              "eval %.2e s\n",
+              mismatches, build_s, summary_s, eval_s);
+  if (mismatches != 0) {
+    std::printf("FAIL: persistent tree differs from one-shot\n");
+    return 1;
+  }
+  std::printf("OK\n");
   return 0;
 }
