@@ -87,6 +87,42 @@ int cfsem_vector_potential_linear_filament_hierarchical(
     double theta, int par,
     double* a_out);
 
+/*
+ * Persistent Barnes-Hut tree over fixed filament geometry. The one-shot
+ * *_hierarchical functions rebuild the tree every call; for fixed geometry with
+ * changing currents, build once here and only refresh currents.
+ *
+ *   cfsem_lf_tree_new          build over n_fil filaments (rs/drs/wire_radius as
+ *                              above); currents start at zero. NULL on failure.
+ *   cfsem_lf_tree_set_currents replace currents (length n_fil) [A]
+ *   cfsem_lf_tree_*            evaluate at n_obs targets; theta/par/out as in the
+ *                              one-shot hierarchical functions
+ *   cfsem_lf_tree_timings      seconds of the build, last summary refresh, last
+ *                              evaluation; any out pointer may be NULL
+ *
+ * A handle is not thread-safe: evaluation refreshes its cached summaries.
+ */
+typedef struct cfsem_lf_tree cfsem_lf_tree;
+
+cfsem_lf_tree* cfsem_lf_tree_new(
+    const double* rs_fil, const double* drs_fil,
+    const double* wire_radius, size_t n_fil);
+
+void cfsem_lf_tree_free(cfsem_lf_tree* tree);
+
+int cfsem_lf_tree_set_currents(cfsem_lf_tree* tree, const double* ifil);
+
+int cfsem_lf_tree_vector_potential(
+    cfsem_lf_tree* tree, const double* rs_obs, size_t n_obs,
+    double theta, int par, double* a_out);
+
+int cfsem_lf_tree_flux_density(
+    cfsem_lf_tree* tree, const double* rs_obs, size_t n_obs,
+    double theta, int par, double* b_out);
+
+int cfsem_lf_tree_timings(
+    const cfsem_lf_tree* tree, double* build_s, double* summary_s, double* eval_s);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

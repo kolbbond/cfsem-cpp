@@ -65,6 +65,38 @@ inline int vector_potential_linear_filament_hierarchical(
       a_out);
 }
 
+// Persistent Barnes-Hut tree over fixed filament geometry; see cfsem.h.
+using lf_tree = ::cfsem_lf_tree;
+
+inline lf_tree* lf_tree_new(const double* rs_fil, const double* drs_fil,
+                            const double* wire_radius, std::size_t n_fil) {
+  return ::cfsem_lf_tree_new(rs_fil, drs_fil, wire_radius, n_fil);
+}
+
+inline void lf_tree_free(lf_tree* tree) { ::cfsem_lf_tree_free(tree); }
+
+inline int lf_tree_set_currents(lf_tree* tree, const double* ifil) {
+  return ::cfsem_lf_tree_set_currents(tree, ifil);
+}
+
+inline int lf_tree_vector_potential(lf_tree* tree, const double* rs_obs,
+                                    std::size_t n_obs, double theta, int par,
+                                    double* a_out) {
+  return ::cfsem_lf_tree_vector_potential(tree, rs_obs, n_obs, theta, par,
+                                          a_out);
+}
+
+inline int lf_tree_flux_density(lf_tree* tree, const double* rs_obs,
+                                std::size_t n_obs, double theta, int par,
+                                double* b_out) {
+  return ::cfsem_lf_tree_flux_density(tree, rs_obs, n_obs, theta, par, b_out);
+}
+
+inline int lf_tree_timings(const lf_tree* tree, double* build_s,
+                           double* summary_s, double* eval_s) {
+  return ::cfsem_lf_tree_timings(tree, build_s, summary_s, eval_s);
+}
+
 } // namespace cfsem
 
 #endif // CFSEM_HPP

@@ -32,10 +32,21 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
+use std::time::Instant;
 
-// `BuildMethod` is only `pub` via this `tree` path (the mod-level re-export is
-// crate-private).
-use cfsem::physics::hierarchical::tree::BuildMethod;
+// The tree/evaluator pieces are only `pub` via their submodule paths (the
+// mod-level re-exports are crate-private).
+use cfsem::physics::hierarchical::evaluator::{
+    eval, eval_par, scratch_len, scratch_len_par, update_summaries, EvaluationScratch,
+    SourceNodeSummaries,
+};
+use cfsem::physics::hierarchical::kernel::{HierarchicalError, HierarchicalKernel};
+use cfsem::physics::hierarchical::kernels::{
+    DipoleTarget, DipoleTargets, LinearFilamentFluxDensityKernel, LinearFilamentFluxDensitySummary,
+    LinearFilamentSource, LinearFilamentSources, LinearFilamentVectorPotentialKernel,
+    LinearFilamentVectorPotentialSummary,
+};
+use cfsem::physics::hierarchical::tree::{BuildMethod, ClusterTree};
 
 /// Signature shared by the linear-filament field functions in `cfsem`
 /// (`flux_density_linear_filament`, `vector_potential_linear_filament`): identical
@@ -289,9 +300,8 @@ unsafe fn linear_filament_field(
 /// contract, plus `theta` and `par`; tree builder fixed to
 /// [`BuildMethod::LongestAxis`].
 ///
-/// `R`/`E` are generic because the convenience fn's `Diagnostics`/
-/// `HierarchicalError` are crate-private to `cfsem` — only `Result::is_err` is
-/// read (any error → status `1`).
+/// `R`/`E` are generic so one helper serves both kernels' `Diagnostics` — only
+/// `Result::is_err` is read (any error → status `1`).
 ///
 /// # Safety
 ///
@@ -371,6 +381,344 @@ where
         out[3 * i + 1] = oy[i];
         out[3 * i + 2] = oz[i];
     }
+    0
+}
+
+/// Persistent Barnes-Hut tree over fixed linear-filament geometry.
+///
+/// The one-shot hierarchical wrappers rebuild the tree on every call; a solver
+/// whose geometry is fixed and whose currents change per iteration pays that
+/// build each time. This handle builds once and refreshes only the node
+/// summaries when currents change (lazily, per kernel, on the next evaluation).
+pub struct LinearFilamentTree {
+    x: Vec<f64>,
+    y: Vec<f64>,
+    z: Vec<f64>,
+    dlx: Vec<f64>,
+    dly: Vec<f64>,
+    dlz: Vec<f64>,
+    wire_radius: Vec<f64>,
+    ifil: Vec<f64>,
+    tree: ClusterTree<f64>,
+    a_summaries: Vec<LinearFilamentVectorPotentialSummary<f64>>,
+    b_summaries: Vec<LinearFilamentFluxDensitySummary<f64>>,
+    a_stale: bool,
+    b_stale: bool,
+    build_seconds: f64,
+    summary_seconds: f64,
+    eval_seconds: f64,
+}
+
+impl LinearFilamentTree {
+    fn sources(&self) -> LinearFilamentSources<'_, f64> {
+        LinearFilamentSources::new(
+            (&self.x, &self.y, &self.z),
+            (&self.dlx, &self.dly, &self.dlz),
+            &self.wire_radius,
+        )
+    }
+}
+
+/// Build a persistent tree over `n_fil` filaments (same layout as
+/// [`cfsem_vector_potential_linear_filament_hierarchical`], minus currents).
+/// Currents start at zero; set them with [`cfsem_lf_tree_set_currents`].
+/// Returns null on a null pointer, tree-construction failure or panic. Free
+/// with [`cfsem_lf_tree_free`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_lf_tree_new(
+    rs_fil: *const f64,
+    drs_fil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+) -> *mut LinearFilamentTree {
+    if rs_fil.is_null() || drs_fil.is_null() || wire_radius.is_null() || n_fil == 0 {
+        return std::ptr::null_mut();
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let start = Instant::now();
+        let (x, y, z) = deinterleave3(slice::from_raw_parts(rs_fil, 3 * n_fil), n_fil);
+        let (dlx, dly, dlz) = deinterleave3(slice::from_raw_parts(drs_fil, 3 * n_fil), n_fil);
+        let wire_radius = slice::from_raw_parts(wire_radius, n_fil).to_vec();
+        let sources = LinearFilamentSources::new((&x, &y, &z), (&dlx, &dly, &dlz), &wire_radius);
+        let tree = match ClusterTree::build_with_method(sources, BuildMethod::LongestAxis) {
+            Ok(t) => t,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        let a_summaries =
+            SourceNodeSummaries::<LinearFilamentVectorPotentialKernel<f64>>::new(tree.as_view())
+                .node_summaries;
+        let b_summaries =
+            SourceNodeSummaries::<LinearFilamentFluxDensityKernel<f64>>::new(tree.as_view())
+                .node_summaries;
+        let build_seconds = start.elapsed().as_secs_f64();
+        Box::into_raw(Box::new(LinearFilamentTree {
+            x,
+            y,
+            z,
+            dlx,
+            dly,
+            dlz,
+            wire_radius,
+            ifil: vec![0.0; n_fil],
+            tree,
+            a_summaries,
+            b_summaries,
+            a_stale: true,
+            b_stale: true,
+            build_seconds,
+            summary_seconds: 0.0,
+            eval_seconds: 0.0,
+        }))
+    }))
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// Release a tree from [`cfsem_lf_tree_new`]. Null is a no-op.
+///
+/// # Safety
+///
+/// `tree` must be null or a live pointer from [`cfsem_lf_tree_new`], not used afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_lf_tree_free(tree: *mut LinearFilamentTree) {
+    if !tree.is_null() {
+        drop(Box::from_raw(tree));
+    }
+}
+
+/// Replace the filament currents (A), length `n_fil`. Summaries are refreshed
+/// lazily on the next evaluation of each field.
+///
+/// # Safety
+///
+/// `tree` must be live; `ifil` must hold `n_fil` values.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_lf_tree_set_currents(
+    tree: *mut LinearFilamentTree,
+    ifil: *const f64,
+) -> i32 {
+    if tree.is_null() || ifil.is_null() {
+        return 2;
+    }
+    let t = &mut *tree;
+    let n = t.ifil.len();
+    t.ifil.copy_from_slice(slice::from_raw_parts(ifil, n));
+    t.a_stale = true;
+    t.b_stale = true;
+    0
+}
+
+/// Hierarchical vector potential (V·s/m) at `n_obs` interleaved targets from the
+/// cached tree. `theta`/`par`/`a_out` as in
+/// [`cfsem_vector_potential_linear_filament_hierarchical`].
+///
+/// # Safety
+///
+/// `tree` must be live; `rs_obs`/`a_out` sized `3 * n_obs`, not aliased.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_lf_tree_vector_potential(
+    tree: *mut LinearFilamentTree,
+    rs_obs: *const f64,
+    n_obs: usize,
+    theta: f64,
+    par: i32,
+    a_out: *mut f64,
+) -> i32 {
+    if tree.is_null() || rs_obs.is_null() || a_out.is_null() {
+        return 2;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let t = &mut *tree;
+        let kernel = LinearFilamentVectorPotentialKernel::<f64>::new();
+        let mut summaries = std::mem::take(&mut t.a_summaries);
+        let stale = t.a_stale;
+        let rc = tree_eval(
+            t,
+            &kernel,
+            &mut summaries,
+            stale,
+            rs_obs,
+            n_obs,
+            theta,
+            par != 0,
+            a_out,
+        );
+        t.a_summaries = summaries;
+        if rc == 0 {
+            t.a_stale = false;
+        }
+        rc
+    }))
+    .unwrap_or(3)
+}
+
+/// Hierarchical flux density (T) from the cached tree. Same contract as
+/// [`cfsem_lf_tree_vector_potential`].
+///
+/// # Safety
+///
+/// `tree` must be live; `rs_obs`/`b_out` sized `3 * n_obs`, not aliased.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_lf_tree_flux_density(
+    tree: *mut LinearFilamentTree,
+    rs_obs: *const f64,
+    n_obs: usize,
+    theta: f64,
+    par: i32,
+    b_out: *mut f64,
+) -> i32 {
+    if tree.is_null() || rs_obs.is_null() || b_out.is_null() {
+        return 2;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let t = &mut *tree;
+        let kernel = LinearFilamentFluxDensityKernel::<f64>::new();
+        let mut summaries = std::mem::take(&mut t.b_summaries);
+        let stale = t.b_stale;
+        let rc = tree_eval(
+            t,
+            &kernel,
+            &mut summaries,
+            stale,
+            rs_obs,
+            n_obs,
+            theta,
+            par != 0,
+            b_out,
+        );
+        t.b_summaries = summaries;
+        if rc == 0 {
+            t.b_stale = false;
+        }
+        rc
+    }))
+    .unwrap_or(3)
+}
+
+/// Wall-clock seconds of the tree build, the last summary refresh and the last
+/// evaluation. Any out pointer may be null.
+///
+/// # Safety
+///
+/// `tree` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_lf_tree_timings(
+    tree: *const LinearFilamentTree,
+    build_s: *mut f64,
+    summary_s: *mut f64,
+    eval_s: *mut f64,
+) -> i32 {
+    if tree.is_null() {
+        return 2;
+    }
+    let t = &*tree;
+    for (p, v) in [
+        (build_s, t.build_seconds),
+        (summary_s, t.summary_seconds),
+        (eval_s, t.eval_seconds),
+    ] {
+        if !p.is_null() {
+            *p = v;
+        }
+    }
+    0
+}
+
+/// Refresh `summaries` if `stale`, then evaluate kernel `K` at the targets.
+unsafe fn tree_eval<K>(
+    t: &mut LinearFilamentTree,
+    kernel: &K,
+    summaries: &mut [K::SourceSummary],
+    stale: bool,
+    rs_obs: *const f64,
+    n_obs: usize,
+    theta: f64,
+    par: bool,
+    out: *mut f64,
+) -> i32
+where
+    K: HierarchicalKernel<
+            Scalar = f64,
+            Output = [f64; 3],
+            SourceGeometry = LinearFilamentSource<f64>,
+            SourceMoment = f64,
+            TargetGeometry = DipoleTarget<f64>,
+        > + Sync,
+{
+    if stale {
+        let start = Instant::now();
+        if update_summaries(
+            kernel,
+            t.tree.as_view(),
+            t.sources(),
+            t.ifil.as_slice(),
+            summaries,
+        ) != HierarchicalError::Ok
+        {
+            return 1;
+        }
+        t.summary_seconds = start.elapsed().as_secs_f64();
+    }
+
+    let start = Instant::now();
+    let (xp, yp, zp) = deinterleave3(slice::from_raw_parts(rs_obs, 3 * n_obs), n_obs);
+    let targets = DipoleTargets::new(&xp, &yp, &zp);
+    let mut ox = vec![0.0_f64; n_obs];
+    let mut oy = vec![0.0_f64; n_obs];
+    let mut oz = vec![0.0_f64; n_obs];
+    let mut scratch_values = vec![
+        [0.0_f64; 3];
+        if par {
+            scratch_len_par(n_obs)
+        } else {
+            scratch_len()
+        }
+    ];
+    let mut scratch = EvaluationScratch {
+        contribution: &mut scratch_values,
+    };
+    let out_components = [ox.as_mut_slice(), oy.as_mut_slice(), oz.as_mut_slice()];
+    let sources = t.sources();
+    let moments = t.ifil.as_slice();
+    let err = if par {
+        eval_par(
+            kernel,
+            t.tree.as_view(),
+            summaries,
+            sources,
+            targets,
+            moments,
+            theta,
+            out_components,
+            &mut scratch,
+        )
+    } else {
+        eval(
+            kernel,
+            t.tree.as_view(),
+            summaries,
+            sources,
+            targets,
+            moments,
+            theta,
+            out_components,
+            &mut scratch,
+        )
+    };
+    if err != HierarchicalError::Ok {
+        return 1;
+    }
+
+    let out = slice::from_raw_parts_mut(out, 3 * n_obs);
+    for i in 0..n_obs {
+        out[3 * i] = ox[i];
+        out[3 * i + 1] = oy[i];
+        out[3 * i + 2] = oz[i];
+    }
+    t.eval_seconds = start.elapsed().as_secs_f64();
     0
 }
 
