@@ -169,6 +169,90 @@ int cfsem_inductance_linear_filaments_sparse_csc(
     double* values_out);
 
 /*
+ * Complete elliptic integral of the second kind, parameter m. Dimensionless.
+ */
+double cfsem_ellipe(double m);
+
+/*
+ * Mutual inductance (H) from ALL source segments to EACH target segment, i.e.
+ * the column sums of cfsem_inductance_linear_filaments_matrix without storing
+ * the matrix. Same 3-point Gauss-Legendre segment integral as the sparse fill.
+ *
+ *   rs_fil_tgt, drs_fil_tgt [in]  interleaved target start/delta, 3*n_tgt [m]
+ *   rs_fil_src, drs_fil_src [in]  interleaved source start/delta, 3*n_src [m]
+ *   wire_radius_src         [in]  source radii, length n_src             [m]
+ *   out                     [out] caller-allocated, length n_tgt         [H]
+ *
+ * Returns a status code (see file header).
+ */
+int cfsem_inductance_linear_filaments(
+    const double* rs_fil_tgt, const double* drs_fil_tgt, size_t n_tgt,
+    const double* rs_fil_src, const double* drs_fil_src,
+    const double* wire_radius_src, size_t n_src,
+    double* out);
+
+/*
+ * Dense mutual-inductance matrix (H). Arguments as above, plus par (nonzero =
+ * parallel). m_out is caller-allocated, length n_src*n_tgt, ROW-MAJOR
+ * (n_src, n_tgt): entry (i, j) = m_out[i*n_tgt + j]. In Armadillo terms that is
+ * arma::Mat<double>(n_tgt, n_src), i.e. the transpose. Returns 5 if
+ * n_src*n_tgt overflows size_t.
+ */
+int cfsem_inductance_linear_filaments_matrix(
+    const double* rs_fil_tgt, const double* drs_fil_tgt, size_t n_tgt,
+    const double* rs_fil_src, const double* drs_fil_src,
+    const double* wire_radius_src, size_t n_src,
+    int par,
+    double* m_out);
+
+/*
+ * Per-source flux density (T) response matrices: entry (i, j) is the field at
+ * observation i due to filament j, currents applied, so summing each row
+ * recovers cfsem_flux_density_linear_filament. Same inputs as that function,
+ * plus par (nonzero = parallel).
+ *
+ *   bx_out, by_out, bz_out [out] caller-allocated, each length n_obs*n_fil,
+ *                                ROW-MAJOR (n_obs, n_fil)                  [T]
+ *
+ * Components are separate buffers, not interleaved, so the matrices are written
+ * in place without a copy. In Armadillo terms each is
+ * arma::Mat<double>(n_fil, n_obs). Returns 5 if n_obs*n_fil overflows size_t.
+ */
+int cfsem_flux_density_linear_filament_matrix(
+    const double* rs_obs, size_t n_obs,
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, size_t n_fil,
+    int par,
+    double* bx_out, double* by_out, double* bz_out);
+
+/* Per-source vector potential (V*s/m) response matrices; contract as above. */
+int cfsem_vector_potential_linear_filament_matrix(
+    const double* rs_obs, size_t n_obs,
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, size_t n_fil,
+    int par,
+    double* ax_out, double* ay_out, double* az_out);
+
+/*
+ * J x B body force density (N/m^3) on a current density at each observation
+ * point, due to the filaments' field.
+ *
+ *   rs_fil, drs_fil, ifil, wire_radius, n_fil  [in] filaments, as above
+ *   rs_obs  [in]  interleaved observation coords,  length 3*n_obs   [m]
+ *   j_obs   [in]  interleaved current density,     length 3*n_obs   [A/m^2]
+ *   par     [in]  nonzero = parallel
+ *   f_out   [out] interleaved fx,fy,fz, caller-allocated, 3*n_obs   [N/m^3]
+ *
+ * Returns a status code (see file header).
+ */
+int cfsem_body_force_density_linear_filament(
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, size_t n_fil,
+    const double* rs_obs, const double* j_obs, size_t n_obs,
+    int par,
+    double* f_out);
+
+/*
  * Persistent Barnes-Hut tree over fixed filament geometry. The one-shot
  * *_hierarchical functions rebuild the tree every call; for fixed geometry with
  * changing currents, build once here and only refresh currents.

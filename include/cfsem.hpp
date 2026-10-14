@@ -103,6 +103,64 @@ inline int inductance_linear_filaments_sparse_csc(
       n_src, row_indices, column_pointers, nnz, par, values_out);
 }
 
+// Complete elliptic integral of the second kind, parameter m. Dimensionless.
+inline double ellipe(double m) { return ::cfsem_ellipe(m); }
+
+// Mutual inductance (H) from all sources to each target, length n_tgt.
+inline int inductance_linear_filaments(
+    const double* rs_fil_tgt, const double* drs_fil_tgt, std::size_t n_tgt,
+    const double* rs_fil_src, const double* drs_fil_src,
+    const double* wire_radius_src, std::size_t n_src,
+    double* out) {
+  return ::cfsem_inductance_linear_filaments(rs_fil_tgt, drs_fil_tgt, n_tgt,
+                                             rs_fil_src, drs_fil_src,
+                                             wire_radius_src, n_src, out);
+}
+
+// Dense mutual-inductance matrix (H), row-major (n_src, n_tgt). See cfsem.h.
+inline int inductance_linear_filaments_matrix(
+    const double* rs_fil_tgt, const double* drs_fil_tgt, std::size_t n_tgt,
+    const double* rs_fil_src, const double* drs_fil_src,
+    const double* wire_radius_src, std::size_t n_src, int par,
+    double* m_out) {
+  return ::cfsem_inductance_linear_filaments_matrix(
+      rs_fil_tgt, drs_fil_tgt, n_tgt, rs_fil_src, drs_fil_src, wire_radius_src,
+      n_src, par, m_out);
+}
+
+// Per-source B (T) response matrices, each row-major (n_obs, n_fil).
+inline int flux_density_linear_filament_matrix(
+    const double* rs_obs, std::size_t n_obs,
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, std::size_t n_fil, int par,
+    double* bx_out, double* by_out, double* bz_out) {
+  return ::cfsem_flux_density_linear_filament_matrix(
+      rs_obs, n_obs, rs_fil, drs_fil, ifil, wire_radius, n_fil, par, bx_out,
+      by_out, bz_out);
+}
+
+// Per-source A (V*s/m) response matrices, each row-major (n_obs, n_fil).
+inline int vector_potential_linear_filament_matrix(
+    const double* rs_obs, std::size_t n_obs,
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, std::size_t n_fil, int par,
+    double* ax_out, double* ay_out, double* az_out) {
+  return ::cfsem_vector_potential_linear_filament_matrix(
+      rs_obs, n_obs, rs_fil, drs_fil, ifil, wire_radius, n_fil, par, ax_out,
+      ay_out, az_out);
+}
+
+// J x B body force density (N/m^3) at observation points; interleaved 3xN.
+inline int body_force_density_linear_filament(
+    const double* rs_fil, const double* drs_fil,
+    const double* ifil, const double* wire_radius, std::size_t n_fil,
+    const double* rs_obs, const double* j_obs, std::size_t n_obs, int par,
+    double* f_out) {
+  return ::cfsem_body_force_density_linear_filament(
+      rs_fil, drs_fil, ifil, wire_radius, n_fil, rs_obs, j_obs, n_obs, par,
+      f_out);
+}
+
 // Persistent Barnes-Hut tree over fixed filament geometry; see cfsem.h.
 using lf_tree = ::cfsem_lf_tree;
 

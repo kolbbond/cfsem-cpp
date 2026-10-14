@@ -318,5 +318,156 @@ int main() {
     return 1;
   }
   std::printf("OK\n");
+
+  // E(0) = pi/2, E(1) = 1; the polynomial fit is good to ~2e-8.
+  const double e0 = cfsem::ellipe(0.0);
+  const double e1 = cfsem::ellipe(1.0 - 1e-15);
+  std::printf("ellipe: E(0)=%.9f (pi/2=%.9f), E(1)=%.9f\n", e0, 0.5 * kPi, e1);
+  if (std::fabs(e0 - 0.5 * kPi) > 1e-7 || std::fabs(e1 - 1.0) > 1e-6) {
+    std::printf("FAIL: ellipe off its endpoints\n");
+    return 1;
+  }
+  std::printf("OK\n");
+
+  // Response matrices: row sums must reproduce the contracted field, and the
+  // parallel path must match the serial one.
+  {
+    const std::size_t n_mat = kObs * kSeg;
+    std::vector<double> mx(n_mat), my(n_mat), mz(n_mat);
+    std::vector<double> px(n_mat), py(n_mat), pz(n_mat);
+    std::vector<double> contracted(3 * kObs);
+    double worst = 0.0;
+    bool par_equal = true;
+    for (int field = 0; field < 2; ++field) {
+      const auto matrix = field == 0
+                              ? cfsem::flux_density_linear_filament_matrix
+                              : cfsem::vector_potential_linear_filament_matrix;
+      const auto direct = field == 0 ? cfsem::flux_density_linear_filament
+                                     : cfsem::vector_potential_linear_filament;
+      int rc = matrix(obs.data(), kObs, seg_fil.data(), seg_dfil.data(),
+                      seg_i.data(), seg_wr.data(), kSeg, /*par=*/0, mx.data(),
+                      my.data(), mz.data());
+      rc |= matrix(obs.data(), kObs, seg_fil.data(), seg_dfil.data(),
+                   seg_i.data(), seg_wr.data(), kSeg, /*par=*/1, px.data(),
+                   py.data(), pz.data());
+      rc |= direct(obs.data(), kObs, seg_fil.data(), seg_dfil.data(),
+                   seg_i.data(), seg_wr.data(), kSeg, contracted.data());
+      if (rc != 0) {
+        std::printf("FAIL: response-matrix call failed (field %d)\n", field);
+        return 1;
+      }
+      par_equal = par_equal && mx == px && my == py && mz == pz;
+      for (std::size_t i = 0; i < kObs; ++i) {
+        double sum[3] = {0.0, 0.0, 0.0};
+        for (std::size_t j = 0; j < kSeg; ++j) {
+          sum[0] += mx[i * kSeg + j];
+          sum[1] += my[i * kSeg + j];
+          sum[2] += mz[i * kSeg + j];
+        }
+        double diff[3];
+        for (int k = 0; k < 3; ++k) {
+          diff[k] = sum[k] - contracted[3 * i + k];
+        }
+        worst = std::fmax(worst, mag3(diff) / mag3(&contracted[3 * i]));
+      }
+    }
+    std::printf("B/A response matrices: row-sum vs contracted rel_diff=%.2e, "
+                "par == serial: %s\n",
+                worst, par_equal ? "yes" : "no");
+    if (worst > 1e-10 || !par_equal) {
+      std::printf("FAIL: response matrices disagree with contracted field\n");
+      return 1;
+    }
+  }
+  std::printf("OK\n");
+
+  // Dense M: symmetric, positive diagonal, column sums equal the contracted
+  // coupling, parallel matches serial.
+  {
+    std::vector<double> m(kSeg * kSeg), m_par(kSeg * kSeg), m_col(kSeg);
+    int rc = cfsem::inductance_linear_filaments_matrix(
+        seg_fil.data(), seg_dfil.data(), kSeg, seg_fil.data(), seg_dfil.data(),
+        seg_wr.data(), kSeg, /*par=*/0, m.data());
+    rc |= cfsem::inductance_linear_filaments_matrix(
+        seg_fil.data(), seg_dfil.data(), kSeg, seg_fil.data(), seg_dfil.data(),
+        seg_wr.data(), kSeg, /*par=*/1, m_par.data());
+    rc |= cfsem::inductance_linear_filaments(
+        seg_fil.data(), seg_dfil.data(), kSeg, seg_fil.data(), seg_dfil.data(),
+        seg_wr.data(), kSeg, m_col.data());
+    const int rc_overflow = cfsem::inductance_linear_filaments_matrix(
+        seg_fil.data(), seg_dfil.data(), static_cast<std::size_t>(-1) / 2,
+        seg_fil.data(), seg_dfil.data(), seg_wr.data(), 3, /*par=*/0, m.data());
+    if (rc != 0 || rc_overflow != 5) {
+      std::printf("FAIL: dense inductance rc=%d overflow rc=%d (expected 5)\n",
+                  rc, rc_overflow);
+      return 1;
+    }
+    double m_max = 0.0, asym = 0.0, col_err = 0.0;
+    bool diag_pos = true;
+    for (std::size_t j = 0; j < kSeg; ++j) {
+      double col = 0.0;
+      for (std::size_t i = 0; i < kSeg; ++i) {
+        const double mij = m[i * kSeg + j];
+        col += mij;
+        m_max = std::fmax(m_max, std::fabs(mij));
+        asym = std::fmax(asym, std::fabs(mij - m[j * kSeg + i]));
+      }
+      diag_pos = diag_pos && m[j * kSeg + j] > 0.0;
+      col_err = std::fmax(col_err, std::fabs(col - m_col[j]) / std::fabs(m_col[j]));
+    }
+    std::printf("dense M (%zux%zu): asymmetry=%.2e, column-sum vs contracted "
+                "rel_diff=%.2e, diag>0: %s, par == serial: %s\n",
+                kSeg, kSeg, asym / m_max, col_err, diag_pos ? "yes" : "no",
+                m == m_par ? "yes" : "no");
+    if (asym / m_max > 1e-12 || col_err > 1e-10 || !diag_pos || m != m_par) {
+      std::printf("FAIL: dense inductance checks\n");
+      return 1;
+    }
+  }
+  std::printf("OK\n");
+
+  // Body force density must equal J x B with B from the direct evaluator.
+  {
+    std::vector<double> j_obs(3 * kObs), f(3 * kObs), f_par(3 * kObs),
+        b(3 * kObs);
+    for (std::size_t i = 0; i < kObs; ++i) {
+      j_obs[3 * i] = 1.0e6 * std::sin(0.3 * static_cast<double>(i));
+      j_obs[3 * i + 1] = 2.0e6;
+      j_obs[3 * i + 2] = -1.0e6 * std::cos(0.2 * static_cast<double>(i));
+    }
+    int rc = cfsem::body_force_density_linear_filament(
+        seg_fil.data(), seg_dfil.data(), seg_i.data(), seg_wr.data(), kSeg,
+        obs.data(), j_obs.data(), kObs, /*par=*/0, f.data());
+    rc |= cfsem::body_force_density_linear_filament(
+        seg_fil.data(), seg_dfil.data(), seg_i.data(), seg_wr.data(), kSeg,
+        obs.data(), j_obs.data(), kObs, /*par=*/1, f_par.data());
+    rc |= cfsem::flux_density_linear_filament(
+        obs.data(), kObs, seg_fil.data(), seg_dfil.data(), seg_i.data(),
+        seg_wr.data(), kSeg, b.data());
+    if (rc != 0) {
+      std::printf("FAIL: body force rc=%d\n", rc);
+      return 1;
+    }
+    double worst = 0.0;
+    for (std::size_t i = 0; i < kObs; ++i) {
+      const double* jv = &j_obs[3 * i];
+      const double* bv = &b[3 * i];
+      const double jxb[3] = {jv[1] * bv[2] - jv[2] * bv[1],
+                             jv[2] * bv[0] - jv[0] * bv[2],
+                             jv[0] * bv[1] - jv[1] * bv[0]};
+      double diff[3];
+      for (int k = 0; k < 3; ++k) {
+        diff[k] = f[3 * i + k] - jxb[k];
+      }
+      worst = std::fmax(worst, mag3(diff) / mag3(jxb));
+    }
+    std::printf("body force vs J x B: rel_diff=%.2e, par == serial: %s\n",
+                worst, f == f_par ? "yes" : "no");
+    if (worst > 1e-10 || f != f_par) {
+      std::printf("FAIL: body force disagrees with J x B\n");
+      return 1;
+    }
+  }
+  std::printf("OK\n");
   return 0;
 }

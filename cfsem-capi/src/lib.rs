@@ -59,9 +59,9 @@ use cfsem::physics::hierarchical::kernels::{
 use cfsem::physics::hierarchical::tree::{BuildMethod, ClusterTree};
 use cfsem::physics::hierarchical::Skip;
 
-/// Signature shared by the linear-filament field functions in `cfsem`
-/// (`flux_density_linear_filament`, `vector_potential_linear_filament`): identical
-/// argument shape, different physics.
+/// Signature shared by the linear-filament field functions in `cfsem` (the
+/// contracted B/A evaluators and their `_matrix` variants): identical argument
+/// shape, different physics and output length.
 type LinFilamentFn = fn(
     (&[f64], &[f64], &[f64]),             // observation points (xs, ys, zs)
     (&[f64], &[f64], &[f64]),             // filament start coords
@@ -463,6 +463,362 @@ pub unsafe extern "C" fn cfsem_inductance_linear_filaments_sparse_csc(
     .unwrap_or(3)
 }
 
+/// (dimensionless) Complete elliptic integral of the second kind, parameter `m`.
+/// Wraps [`cfsem::math::ellipe`].
+#[no_mangle]
+pub extern "C" fn cfsem_ellipe(m: f64) -> f64 {
+    cfsem::math::ellipe(m)
+}
+
+/// Mutual inductance (H) from all source segments to each target segment — the
+/// column sums of [`cfsem_inductance_linear_filaments_matrix`] without storing
+/// the matrix. `out` has length `n_tgt`. Wraps
+/// [`cfsem::physics::linear_filament::inductance_linear_filaments`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_inductance_linear_filaments(
+    rs_fil_tgt: *const f64,
+    drs_fil_tgt: *const f64,
+    n_tgt: usize,
+    rs_fil_src: *const f64,
+    drs_fil_src: *const f64,
+    wire_radius_src: *const f64,
+    n_src: usize,
+    out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        inductance_linear_filaments_impl(
+            rs_fil_tgt,
+            drs_fil_tgt,
+            n_tgt,
+            rs_fil_src,
+            drs_fil_src,
+            wire_radius_src,
+            n_src,
+            out,
+            n_tgt,
+            cfsem::physics::linear_filament::inductance_linear_filaments,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// Dense mutual-inductance matrix (H), row-major `(n_src, n_tgt)`. Wraps
+/// [`cfsem::physics::linear_filament::inductance_linear_filaments_matrix`] (and
+/// its `_par` variant when `par != 0`). Returns `5` if `n_src * n_tgt` overflows.
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_inductance_linear_filaments_matrix(
+    rs_fil_tgt: *const f64,
+    drs_fil_tgt: *const f64,
+    n_tgt: usize,
+    rs_fil_src: *const f64,
+    drs_fil_src: *const f64,
+    wire_radius_src: *const f64,
+    n_src: usize,
+    par: i32,
+    m_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(n_out) = n_src.checked_mul(n_tgt) else {
+            return 5;
+        };
+        let f = if par != 0 {
+            cfsem::physics::linear_filament::inductance_linear_filaments_matrix_par
+        } else {
+            cfsem::physics::linear_filament::inductance_linear_filaments_matrix
+        };
+        inductance_linear_filaments_impl(
+            rs_fil_tgt,
+            drs_fil_tgt,
+            n_tgt,
+            rs_fil_src,
+            drs_fil_src,
+            wire_radius_src,
+            n_src,
+            m_out,
+            n_out,
+            f,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// Per-source flux density (T) response matrices, each row-major `(n_obs, n_fil)`
+/// with currents applied; row sums recover
+/// [`cfsem_flux_density_linear_filament`]. Wraps
+/// [`cfsem::physics::linear_filament::flux_density_linear_filament_matrix`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_flux_density_linear_filament_matrix(
+    rs_obs: *const f64,
+    n_obs: usize,
+    rs_fil: *const f64,
+    drs_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    par: i32,
+    bx_out: *mut f64,
+    by_out: *mut f64,
+    bz_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let f: LinFilamentFn = if par != 0 {
+            cfsem::physics::linear_filament::flux_density_linear_filament_matrix_par
+        } else {
+            cfsem::physics::linear_filament::flux_density_linear_filament_matrix
+        };
+        linear_filament_matrix(
+            rs_obs,
+            n_obs,
+            rs_fil,
+            drs_fil,
+            ifil,
+            wire_radius,
+            n_fil,
+            (bx_out, by_out, bz_out),
+            f,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// Per-source vector potential (V·s/m) response matrices; same contract as
+/// [`cfsem_flux_density_linear_filament_matrix`]. Wraps
+/// [`cfsem::physics::linear_filament::vector_potential_linear_filament_matrix`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_vector_potential_linear_filament_matrix(
+    rs_obs: *const f64,
+    n_obs: usize,
+    rs_fil: *const f64,
+    drs_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    par: i32,
+    ax_out: *mut f64,
+    ay_out: *mut f64,
+    az_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let f: LinFilamentFn = if par != 0 {
+            cfsem::physics::linear_filament::vector_potential_linear_filament_matrix_par
+        } else {
+            cfsem::physics::linear_filament::vector_potential_linear_filament_matrix
+        };
+        linear_filament_matrix(
+            rs_obs,
+            n_obs,
+            rs_fil,
+            drs_fil,
+            ifil,
+            wire_radius,
+            n_fil,
+            (ax_out, ay_out, az_out),
+            f,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// J×B body force density (N/m³) on current density `j_obs` (A/m²) at each
+/// observation point, from the filaments' field. Wraps
+/// [`cfsem::physics::linear_filament::body_force_density_linear_filament`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_body_force_density_linear_filament(
+    rs_fil: *const f64,
+    drs_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    rs_obs: *const f64,
+    j_obs: *const f64,
+    n_obs: usize,
+    par: i32,
+    f_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if rs_fil.is_null()
+            || drs_fil.is_null()
+            || ifil.is_null()
+            || wire_radius.is_null()
+            || rs_obs.is_null()
+            || j_obs.is_null()
+            || f_out.is_null()
+        {
+            return 2;
+        }
+
+        let (xfil, yfil, zfil) = deinterleave3(slice::from_raw_parts(rs_fil, 3 * n_fil), n_fil);
+        let (dlx, dly, dlz) = deinterleave3(slice::from_raw_parts(drs_fil, 3 * n_fil), n_fil);
+        let ifil = slice::from_raw_parts(ifil, n_fil);
+        let wire_radius = slice::from_raw_parts(wire_radius, n_fil);
+        let (xp, yp, zp) = deinterleave3(slice::from_raw_parts(rs_obs, 3 * n_obs), n_obs);
+        let (jx, jy, jz) = deinterleave3(slice::from_raw_parts(j_obs, 3 * n_obs), n_obs);
+
+        let mut ox = vec![0.0_f64; n_obs];
+        let mut oy = vec![0.0_f64; n_obs];
+        let mut oz = vec![0.0_f64; n_obs];
+
+        let f = if par != 0 {
+            cfsem::physics::linear_filament::body_force_density_linear_filament_par
+        } else {
+            cfsem::physics::linear_filament::body_force_density_linear_filament
+        };
+        let result = f(
+            (&xfil, &yfil, &zfil),
+            (&dlx, &dly, &dlz),
+            ifil,
+            wire_radius,
+            (&xp, &yp, &zp),
+            (&jx, &jy, &jz),
+            (&mut ox, &mut oy, &mut oz),
+        );
+        if result.is_err() {
+            return 1;
+        }
+
+        interleave3(slice::from_raw_parts_mut(f_out, 3 * n_obs), &ox, &oy, &oz);
+        0
+    }))
+    .unwrap_or(3)
+}
+
+/// Signature shared by the dense inductance functions in `cfsem`: target segments,
+/// source segments, source radii, then a flat output.
+type InductanceFn = fn(
+    (&[f64], &[f64], &[f64]),
+    (&[f64], &[f64], &[f64]),
+    (&[f64], &[f64], &[f64]),
+    (&[f64], &[f64], &[f64]),
+    &[f64],
+    &mut [f64],
+) -> Result<(), &'static str>;
+
+/// Shared body of the dense inductance wrappers; `n_out` is the output length.
+///
+/// # Safety
+///
+/// Every pointer must be non-null and sized as documented in `cfsem.h`.
+unsafe fn inductance_linear_filaments_impl(
+    rs_fil_tgt: *const f64,
+    drs_fil_tgt: *const f64,
+    n_tgt: usize,
+    rs_fil_src: *const f64,
+    drs_fil_src: *const f64,
+    wire_radius_src: *const f64,
+    n_src: usize,
+    out: *mut f64,
+    n_out: usize,
+    f: InductanceFn,
+) -> i32 {
+    if rs_fil_tgt.is_null()
+        || drs_fil_tgt.is_null()
+        || rs_fil_src.is_null()
+        || drs_fil_src.is_null()
+        || wire_radius_src.is_null()
+        || out.is_null()
+    {
+        return 2;
+    }
+
+    let (xt, yt, zt) = deinterleave3(slice::from_raw_parts(rs_fil_tgt, 3 * n_tgt), n_tgt);
+    let (dxt, dyt, dzt) = deinterleave3(slice::from_raw_parts(drs_fil_tgt, 3 * n_tgt), n_tgt);
+    let (xs, ys, zs) = deinterleave3(slice::from_raw_parts(rs_fil_src, 3 * n_src), n_src);
+    let (dxs, dys, dzs) = deinterleave3(slice::from_raw_parts(drs_fil_src, 3 * n_src), n_src);
+    let wire_radius_src = slice::from_raw_parts(wire_radius_src, n_src);
+    let out = slice::from_raw_parts_mut(out, n_out);
+
+    let result = f(
+        (&xt, &yt, &zt),
+        (&dxt, &dyt, &dzt),
+        (&xs, &ys, &zs),
+        (&dxs, &dys, &dzs),
+        wire_radius_src,
+        out,
+    );
+    if result.is_err() {
+        return 1;
+    }
+    0
+}
+
+/// Shared body of the B/A response-matrix wrappers. Writes straight into the
+/// caller's three `(n_obs, n_fil)` buffers — no re-interleave, since the matrices
+/// dwarf the inputs. Returns `5` if `n_obs * n_fil` overflows.
+///
+/// # Safety
+///
+/// Every pointer must be non-null and sized as documented in `cfsem.h`; the three
+/// outputs must not alias each other or the inputs.
+unsafe fn linear_filament_matrix(
+    rs_obs: *const f64,
+    n_obs: usize,
+    rs_fil: *const f64,
+    drs_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    out: (*mut f64, *mut f64, *mut f64),
+    f: LinFilamentFn,
+) -> i32 {
+    if rs_obs.is_null()
+        || rs_fil.is_null()
+        || drs_fil.is_null()
+        || ifil.is_null()
+        || wire_radius.is_null()
+        || out.0.is_null()
+        || out.1.is_null()
+        || out.2.is_null()
+    {
+        return 2;
+    }
+    let Some(n_out) = n_obs.checked_mul(n_fil) else {
+        return 5;
+    };
+
+    let (xp, yp, zp) = deinterleave3(slice::from_raw_parts(rs_obs, 3 * n_obs), n_obs);
+    let (xfil, yfil, zfil) = deinterleave3(slice::from_raw_parts(rs_fil, 3 * n_fil), n_fil);
+    let (dlx, dly, dlz) = deinterleave3(slice::from_raw_parts(drs_fil, 3 * n_fil), n_fil);
+    let ifil = slice::from_raw_parts(ifil, n_fil);
+    let wire_radius = slice::from_raw_parts(wire_radius, n_fil);
+
+    let result = f(
+        (&xp, &yp, &zp),
+        (&xfil, &yfil, &zfil),
+        (&dlx, &dly, &dlz),
+        ifil,
+        wire_radius,
+        (
+            slice::from_raw_parts_mut(out.0, n_out),
+            slice::from_raw_parts_mut(out.1, n_out),
+            slice::from_raw_parts_mut(out.2, n_out),
+        ),
+    );
+    if result.is_err() {
+        return 1;
+    }
+    0
+}
+
 /// Shared implementation for the linear-filament field wrappers.
 ///
 /// Validates pointers, de-interleaves the `3xN` inputs into component vectors,
@@ -534,12 +890,7 @@ unsafe fn linear_filament_field(
         return 1;
     }
 
-    let out = slice::from_raw_parts_mut(out, 3 * n_obs);
-    for i in 0..n_obs {
-        out[3 * i] = ox[i];
-        out[3 * i + 1] = oy[i];
-        out[3 * i + 2] = oz[i];
-    }
+    interleave3(slice::from_raw_parts_mut(out, 3 * n_obs), &ox, &oy, &oz);
     0
 }
 
@@ -624,12 +975,7 @@ where
         return 1;
     }
 
-    let out = slice::from_raw_parts_mut(out, 3 * n_obs);
-    for i in 0..n_obs {
-        out[3 * i] = ox[i];
-        out[3 * i + 1] = oy[i];
-        out[3 * i + 2] = oz[i];
-    }
+    interleave3(slice::from_raw_parts_mut(out, 3 * n_obs), &ox, &oy, &oz);
     0
 }
 
@@ -963,12 +1309,7 @@ where
         return 1;
     }
 
-    let out = slice::from_raw_parts_mut(out, 3 * n_obs);
-    for i in 0..n_obs {
-        out[3 * i] = ox[i];
-        out[3 * i + 1] = oy[i];
-        out[3 * i + 2] = oz[i];
-    }
+    interleave3(slice::from_raw_parts_mut(out, 3 * n_obs), &ox, &oy, &oz);
     t.eval_seconds = start.elapsed().as_secs_f64();
     0
 }
@@ -985,4 +1326,14 @@ fn deinterleave3(rs: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         zs.push(rs[3 * i + 2]);
     }
     (xs, ys, zs)
+}
+
+/// Inverse of [`deinterleave3`]: write `(xs, ys, zs)` into `out` as
+/// `[x0,y0,z0, x1,y1,z1, ...]`.
+fn interleave3(out: &mut [f64], xs: &[f64], ys: &[f64], zs: &[f64]) {
+    for (i, chunk) in out.chunks_exact_mut(3).enumerate() {
+        chunk[0] = xs[i];
+        chunk[1] = ys[i];
+        chunk[2] = zs[i];
+    }
 }

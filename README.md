@@ -106,9 +106,13 @@ int rc = cfsem::flux_density_linear_filament(
 
 | Function | Returns |
 | -------- | ------- |
-| `cfsem_ellipk(m)` | complete elliptic integral K(m) (scalar) |
+| `cfsem_ellipk(m)`, `cfsem_ellipe(m)` | complete elliptic integrals K(m), E(m) (scalar) |
 | `cfsem_flux_density_linear_filament(...)` | B (T), direct sum |
 | `cfsem_vector_potential_linear_filament(...)` | A (V·s/m), direct sum |
+| `cfsem_{flux_density,vector_potential}_linear_filament_matrix(...)` | per-source B/A response matrices, row-major `(n_obs, n_fil)` |
+| `cfsem_inductance_linear_filaments(...)` | mutual inductance (H) from all sources to each target segment |
+| `cfsem_inductance_linear_filaments_matrix(...)` | dense mutual-inductance matrix (H), row-major `(n_src, n_tgt)` |
+| `cfsem_body_force_density_linear_filament(...)` | J×B body force density (N/m³) |
 | `cfsem_flux_density_linear_filament_hierarchical(..., theta, par, skip, ...)` | B (T), Barnes-Hut |
 | `cfsem_vector_potential_linear_filament_hierarchical(..., theta, par, skip, ...)` | A (V·s/m), Barnes-Hut |
 | `cfsem_near_field_interaction_map_linear_filament(...)` | CSC pattern of the near-field (direct) interactions |
