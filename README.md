@@ -1,34 +1,47 @@
 # cfsem-cpp
 
-A **C-ABI shim library** over the [`cfsem`](https://github.com/kolbbond/cfsem-py)
-Rust crate (quasi-steady electromagnetics: filamentized Biot-Savart,
-Grad-Shafranov, etc.). It wraps `cfsem`'s Rust functions in `extern "C"` so C and
-C++ code can link directly against it.
+A **C-ABI shim library** over the [`cfsem`](https://github.com/cfs-energy/cfsem-py)
+Rust crate, so C and C++ code can link directly against it.
 
 Built with [Corrosion](https://github.com/corrosion-rs/corrosion), which compiles
 the Rust crates as part of the normal CMake build.
 
-## Role and scope
+## About cfsem
 
-cfsem is intended as an **alternative / reference B- and A-field calculator** — an
-*exact direct-summation* Biot-Savart backend, suitable for cross-checking a
-fast-multipole (FMM) solver's results, and for small problems.
+[`cfsem`](https://docs.rs/cfsem) is a library of quasi-steady electromagnetics
+formulas: Biot-Savart fields, vector potentials, and inductances for linear and
+circular current filaments, Grad-Shafranov operators, volumetric and
+boundary-element sources, and related math (e.g. elliptic integrals). Its stated
+goals are library-level formulas with literature references and units,
+quantitative unit tests, and performance; the Rust core is parallelized with
+`rayon` and also ships as a Python package.
 
-Two things follow from that:
+For linear filaments it offers two evaluation paths, both exposed here:
 
-- It is **O(N·M)** (every observation point against every filament), not an FMM,
-  so it is a validation/reference path, not a drop-in performance replacement.
-- cfsem and rat regularize the near-filament singularity **differently** (cfsem
-  models a finite-thickness conductor via `wire_radius`; rat van Lanen uses an
-  `eps` softening). They agree in the **far field** (observation well separated
-  from sources) but **not** for self-field / on-filament evaluation. Validate on
-  separated source/observation configurations.
+- **Direct summation** — every observation point against every filament,
+  O(N·M). Exact up to floating point, and the reference the other path is
+  checked against.
+- **Hierarchical (Barnes-Hut)** — a source tree with an acceptance angle
+  `theta`, trading a controllable approximation error for scaling to large
+  problems. There is no guaranteed error bound, so validate `theta` against the
+  direct functions for your geometry.
+
+Near a filament, cfsem treats each source as a finite-thickness conductor of
+radius `wire_radius` rather than an ideal line current, so fields stay bounded
+on and inside the conductor. Codes that regularize this singularity differently
+will agree with cfsem in the far field but not for self-field or on-filament
+evaluation; compare on well-separated source/observation configurations.
+
+This repo exposes only the linear-filament subset. The rest of cfsem is
+reachable from Rust or Python directly.
 
 ## Data layout
 
 Coordinate arrays use the **interleaved 3×N** layout `[x0,y0,z0, x1,y1,z1, …]`,
 matching an Armadillo `arma::Mat<double>(3, N)` in memory (column-major). A
 consumer can pass `mat.memptr()` directly — no transpose at the boundary.
+cfsem works in structure-of-arrays internally, so each call de-interleaves into
+temporaries (an O(N) copy).
 
 ## Layout
 
@@ -57,7 +70,7 @@ git clone --recursive https://github.com/kolbbond/cfsem-cpp.git
 mkdir build && cd build
 cmake ..
 make
-./cfsem-cpp        # smoke test: prints ellipk + a Biot-Savart B-field
+./cfsem-cpp        # smoke test; asserts its own tolerances
 ```
 
 The first build compiles `cfsem` and its dependencies (`faer`, `nalgebra`,
@@ -94,24 +107,29 @@ int rc = cfsem::flux_density_linear_filament(
 | Function | Returns |
 | -------- | ------- |
 | `cfsem_ellipk(m)` | complete elliptic integral K(m) (scalar) |
-| `cfsem_flux_density_linear_filament(...)` | B-field (T) from linear filaments — exact O(N·M) direct sum |
-| `cfsem_vector_potential_linear_filament(...)` | A-field (V·s/m) from linear filaments — exact O(N·M) direct sum |
-| `cfsem_flux_density_linear_filament_hierarchical(..., theta, par, ...)` | B-field (T), **approximate** Barnes-Hut tree sum |
-| `cfsem_vector_potential_linear_filament_hierarchical(..., theta, par, ...)` | A-field (V·s/m), **approximate** Barnes-Hut tree sum |
+| `cfsem_flux_density_linear_filament(...)` | B (T), direct sum |
+| `cfsem_vector_potential_linear_filament(...)` | A (V·s/m), direct sum |
+| `cfsem_flux_density_linear_filament_hierarchical(..., theta, par, skip, ...)` | B (T), Barnes-Hut |
+| `cfsem_vector_potential_linear_filament_hierarchical(..., theta, par, skip, ...)` | A (V·s/m), Barnes-Hut |
+| `cfsem_near_field_interaction_map_linear_filament(...)` | CSC pattern of the near-field (direct) interactions |
+| `cfsem_inductance_linear_filaments_sparse_csc(...)` | mutual inductance (H) on a caller-supplied CSC pattern |
+| `cfsem_lf_tree_*` | persistent Barnes-Hut tree: build once, update currents, evaluate A/B |
 
-The `*_hierarchical` variants take the same interleaved-3×N arguments plus a
-Barnes-Hut acceptance angle `theta` (smaller = more accurate, slower) and an `int
-par` flag (nonzero = parallel target evaluation). They are **approximate** — a
-truncated tree method with no guaranteed accuracy bound — so they are a
-performance/scaling path, not for safety-related field limits; validate `theta`
-against the exact direct functions for your configuration.
+The `*_hierarchical` variants add `theta` (acceptance angle; smaller = more
+accurate, slower), `par` (nonzero = parallel), and `skip` (`CFSEM_SKIP_*`), which
+omits near- or far-field interactions; a full solve equals near-only plus
+far-only. Together with the interaction map and sparse inductance, this supports
+a near/far split: an explicit sparse near-field M plus a far-field-only tree
+solve. The `cfsem_lf_tree_*` handle avoids rebuilding the tree when only
+currents change.
 
 Status codes: `0` ok · `1` cfsem error (e.g. length mismatch) · `2` null pointer
-· `3` panic caught at the FFI boundary.
+· `3` panic caught at the FFI boundary · `4` buffer too small (required length
+written back) · `5` argument out of range.
 
 ## Adding a function to the C API
 
-Exposing another `cfsem` function takes three coordinated edits:
+Exposing another `cfsem` function takes coordinated edits:
 
 1. **`cfsem-capi/src/lib.rs`** — add a `#[no_mangle] pub extern "C"` wrapper,
    wrapped in `catch_unwind`. Array functions follow the interleaved-3×N +
@@ -122,3 +140,4 @@ Exposing another `cfsem` function takes three coordinated edits:
 2. **`include/cfsem.h`** — declare the matching C signature (signatures are
    unchecked across the FFI boundary; keep them exactly in sync).
 3. **`include/cfsem.hpp`** — add the `namespace cfsem` inline forwarder.
+4. **`main.cpp`** — exercise it; an export with no smoke test doesn't exist.
