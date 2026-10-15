@@ -1723,10 +1723,10 @@ fn deinterleave3(rs: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let mut xs = Vec::with_capacity(n);
     let mut ys = Vec::with_capacity(n);
     let mut zs = Vec::with_capacity(n);
-    for i in 0..n {
-        xs.push(rs[3 * i]);
-        ys.push(rs[3 * i + 1]);
-        zs.push(rs[3 * i + 2]);
+    for &[x, y, z] in rs.as_chunks::<3>().0 {
+        xs.push(x);
+        ys.push(y);
+        zs.push(z);
     }
     (xs, ys, zs)
 }
@@ -1734,10 +1734,13 @@ fn deinterleave3(rs: &[f64], n: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
 /// Inverse of [`deinterleave3`]: write `(xs, ys, zs)` into `out` as
 /// `[x0,y0,z0, x1,y1,z1, ...]`.
 fn interleave3(out: &mut [f64], xs: &[f64], ys: &[f64], zs: &[f64]) {
-    for (i, chunk) in out.chunks_exact_mut(3).enumerate() {
-        chunk[0] = xs[i];
-        chunk[1] = ys[i];
-        chunk[2] = zs[i];
+    for (chunk, ((&x, &y), &z)) in out
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(xs.iter().zip(ys).zip(zs))
+    {
+        *chunk = [x, y, z];
     }
 }
 
@@ -1745,17 +1748,16 @@ fn interleave3(out: &mut [f64], xs: &[f64], ys: &[f64], zs: &[f64]) {
 /// `(rs, zs)`, each length `n`.
 fn deinterleave2(rz: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     let (mut rs, mut zs) = (Vec::with_capacity(n), Vec::with_capacity(n));
-    for pair in rz.chunks_exact(2) {
-        rs.push(pair[0]);
-        zs.push(pair[1]);
+    for &[r, z] in rz.as_chunks::<2>().0 {
+        rs.push(r);
+        zs.push(z);
     }
     (rs, zs)
 }
 
 /// Inverse of [`deinterleave2`].
 fn interleave2(out: &mut [f64], rs: &[f64], zs: &[f64]) {
-    for (i, pair) in out.chunks_exact_mut(2).enumerate() {
-        pair[0] = rs[i];
-        pair[1] = zs[i];
+    for (pair, (&r, &z)) in out.as_chunks_mut::<2>().0.iter_mut().zip(rs.iter().zip(zs)) {
+        *pair = [r, z];
     }
 }
