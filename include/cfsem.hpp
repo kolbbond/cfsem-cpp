@@ -161,6 +161,65 @@ inline int body_force_density_linear_filament(
       f_out);
 }
 
+// Circular filaments: rz arrays are interleaved 2xN (r, z), loc/normal 3xN;
+// see cfsem.h.
+
+// Poloidal flux (Wb) = 2*pi*r*A_phi, length n_obs.
+inline int flux_circular_filament(const double* rz_fil, const double* ifil,
+                                  const double* wire_radius, std::size_t n_fil,
+                                  const double* rz_obs, std::size_t n_obs,
+                                  int par, double* psi_out) {
+  return ::cfsem_flux_circular_filament(rz_fil, ifil, wire_radius, n_fil,
+                                        rz_obs, n_obs, par, psi_out);
+}
+
+// A_phi (V*s/m), length n_obs.
+inline int vector_potential_circular_filament(
+    const double* rz_fil, const double* ifil, const double* wire_radius,
+    std::size_t n_fil, const double* rz_obs, std::size_t n_obs, int par,
+    double* a_phi_out) {
+  return ::cfsem_vector_potential_circular_filament(
+      rz_fil, ifil, wire_radius, n_fil, rz_obs, n_obs, par, a_phi_out);
+}
+
+// (B_r, B_z) (T), interleaved 2xN.
+inline int flux_density_circular_filament(
+    const double* rz_fil, const double* ifil, const double* wire_radius,
+    std::size_t n_fil, const double* rz_obs, std::size_t n_obs, int par,
+    double* b_out) {
+  return ::cfsem_flux_density_circular_filament(
+      rz_fil, ifil, wire_radius, n_fil, rz_obs, n_obs, par, b_out);
+}
+
+// Cartesian B (T) at interleaved 3xN points.
+inline int flux_density_circular_filament_cartesian(
+    const double* r_fil, const double* ifil, const double* loc,
+    const double* normal, const double* wire_radius, std::size_t n_fil,
+    const double* rs_obs, std::size_t n_obs, int par, double* b_out) {
+  return ::cfsem_flux_density_circular_filament_cartesian(
+      r_fil, ifil, loc, normal, wire_radius, n_fil, rs_obs, n_obs, par, b_out);
+}
+
+// Cartesian A (V*s/m) at interleaved 3xN points.
+inline int vector_potential_circular_filament_cartesian(
+    const double* r_fil, const double* ifil, const double* loc,
+    const double* normal, const double* wire_radius, std::size_t n_fil,
+    const double* rs_obs, std::size_t n_obs, int par, double* a_out) {
+  return ::cfsem_vector_potential_circular_filament_cartesian(
+      r_fil, ifil, loc, normal, wire_radius, n_fil, rs_obs, n_obs, par, a_out);
+}
+
+// J x B body force density (N/m^3) at interleaved 3xN points.
+inline int body_force_density_circular_filament(
+    const double* r_fil, const double* ifil, const double* loc,
+    const double* normal, const double* wire_radius, std::size_t n_fil,
+    const double* rs_obs, const double* j_obs, std::size_t n_obs, int par,
+    double* f_out) {
+  return ::cfsem_body_force_density_circular_filament(
+      r_fil, ifil, loc, normal, wire_radius, n_fil, rs_obs, j_obs, n_obs, par,
+      f_out);
+}
+
 // Persistent Barnes-Hut tree over fixed filament geometry; see cfsem.h.
 using lf_tree = ::cfsem_lf_tree;
 

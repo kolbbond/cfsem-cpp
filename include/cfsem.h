@@ -10,7 +10,8 @@
  *
  * Data layout: coordinate arrays are INTERLEAVED 3xN, i.e.
  *   [x0,y0,z0, x1,y1,z1, ...], matching an Armadillo arma::Mat<double>(3, N)
- *   in memory (column-major). Pass mat.memptr() directly.
+ *   in memory (column-major). Pass mat.memptr() directly. Axisymmetric
+ *   (circular-filament) coordinates are interleaved 2xN, [r0,z0, r1,z1, ...].
  *
  * Status codes (functions returning int):
  *   0  success
@@ -248,6 +249,82 @@ int cfsem_vector_potential_linear_filament_matrix(
 int cfsem_body_force_density_linear_filament(
     const double* rs_fil, const double* drs_fil,
     const double* ifil, const double* wire_radius, size_t n_fil,
+    const double* rs_obs, const double* j_obs, size_t n_obs,
+    int par,
+    double* f_out);
+
+/*
+ * Circular filaments: closed forms via elliptic integrals. The (r, z) functions
+ * take coaxial loops about the z axis; the Cartesian ones take loops at any
+ * center and orientation. Shared arguments:
+ *
+ *   rz_fil      [in]  interleaved loop (r, z),          length 2*n_fil   [m]
+ *   r_fil       [in]  loop major radii,                 length n_fil     [m]
+ *   ifil        [in]  loop currents,                    length n_fil     [A-turns]
+ *   loc         [in]  interleaved 3xN loop centers,     length 3*n_fil   [m]
+ *   normal      [in]  interleaved 3xN loop normals,     length 3*n_fil
+ *                     (normalized internally; positive current is
+ *                     right-handed about it)
+ *   wire_radius [in]  conductor cross-section radius,   length n_fil     [m]
+ *                     (0 = ideal filament)
+ *   rz_obs      [in]  interleaved observation (r, z),   length 2*n_obs   [m]
+ *   rs_obs      [in]  interleaved 3xN observation pts,  length 3*n_obs   [m]
+ *   par         [in]  nonzero = parallel over observation points
+ *
+ * Finite on axis and for negative r. An ideal filament is singular on the loop
+ * itself; with wire_radius > 0 the field blends to a finite-section model within
+ * 1.5-3 wire radii of the centerline. Invalid geometry (e.g. a zero normal)
+ * yields NaN, not a status code. Each returns a status code.
+ */
+
+/* Poloidal flux (Wb): total flux through the loop of radius r, = 2*pi*r*A_phi.
+ * psi_out has length n_obs. */
+int cfsem_flux_circular_filament(
+    const double* rz_fil, const double* ifil, const double* wire_radius,
+    size_t n_fil,
+    const double* rz_obs, size_t n_obs,
+    int par,
+    double* psi_out);
+
+/* A_phi (V*s/m); A_r = A_z = 0 by symmetry. a_phi_out has length n_obs. */
+int cfsem_vector_potential_circular_filament(
+    const double* rz_fil, const double* ifil, const double* wire_radius,
+    size_t n_fil,
+    const double* rz_obs, size_t n_obs,
+    int par,
+    double* a_phi_out);
+
+/* (B_r, B_z) (T), b_out interleaved, length 2*n_obs. */
+int cfsem_flux_density_circular_filament(
+    const double* rz_fil, const double* ifil, const double* wire_radius,
+    size_t n_fil,
+    const double* rz_obs, size_t n_obs,
+    int par,
+    double* b_out);
+
+/* Cartesian B (T) at rs_obs; b_out interleaved, length 3*n_obs. */
+int cfsem_flux_density_circular_filament_cartesian(
+    const double* r_fil, const double* ifil, const double* loc,
+    const double* normal, const double* wire_radius, size_t n_fil,
+    const double* rs_obs, size_t n_obs,
+    int par,
+    double* b_out);
+
+/* Cartesian A (V*s/m) at rs_obs; a_out interleaved, length 3*n_obs. */
+int cfsem_vector_potential_circular_filament_cartesian(
+    const double* r_fil, const double* ifil, const double* loc,
+    const double* normal, const double* wire_radius, size_t n_fil,
+    const double* rs_obs, size_t n_obs,
+    int par,
+    double* a_out);
+
+/*
+ * J x B body force density (N/m^3) on current density j_obs [A/m^2], interleaved
+ * 3xN, at rs_obs. f_out interleaved, length 3*n_obs.
+ */
+int cfsem_body_force_density_circular_filament(
+    const double* r_fil, const double* ifil, const double* loc,
+    const double* normal, const double* wire_radius, size_t n_fil,
     const double* rs_obs, const double* j_obs, size_t n_obs,
     int par,
     double* f_out);

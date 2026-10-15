@@ -469,5 +469,289 @@ int main() {
     }
   }
   std::printf("OK\n");
+
+  // --- circular filaments ---------------------------------------------------
+  const double loop_r = 0.5, loop_z = 0.1, loop_i = 2.0e3; // (m, m, A-turns)
+  const double rz_loop[2] = {loop_r, loop_z};
+  const double r_loop[1] = {loop_r};
+  const double i_loop[1] = {loop_i};
+  const double thin[1] = {0.0};
+  const double loc_loop[3] = {0.0, 0.0, loop_z};
+  const double z_hat[3] = {0.0, 0.0, 1.0};
+
+  // On axis: B_z = mu0 I R^2 / (2 (R^2 + dz^2)^1.5), B_r = 0. Slightly off axis,
+  // B_r against the small-r series B_r = -(r/2) dB_z/dz, good to O(r^3).
+  {
+    const double dz = 0.3, r_near = 1.0e-3;
+    const double s2 = loop_r * loop_r + dz * dz;
+    const double bz_analytic =
+        kMu0 * loop_i * loop_r * loop_r / (2.0 * std::pow(s2, 1.5));
+    const double br_series = -0.5 * r_near * (-3.0 * dz * bz_analytic / s2);
+    const double rz_axis[2] = {0.0, loop_z + dz};
+    const double rz_near[2] = {r_near, loop_z + dz};
+    double b_axis[2], b_near[2];
+    int rc = cfsem::flux_density_circular_filament(rz_loop, i_loop, thin, 1,
+                                                   rz_axis, 1, /*par=*/0, b_axis);
+    rc |= cfsem::flux_density_circular_filament(rz_loop, i_loop, thin, 1,
+                                                rz_near, 1, /*par=*/0, b_near);
+    if (rc != 0) {
+      std::printf("FAIL: circular B call\n");
+      return 1;
+    }
+    const double rel_bz = std::fabs(b_axis[1] - bz_analytic) / bz_analytic;
+    const double rel_br = std::fabs(b_near[0] - br_series) / br_series;
+    std::printf("circular on-axis: Bz rel_err=%.2e, Br=%.1e; Br at r=%.0e vs "
+                "series rel_err=%.2e\n",
+                rel_bz, b_axis[0], r_near, rel_br);
+    if (rel_bz > 1e-6 || b_axis[0] != 0.0 || rel_br > 1e-3) {
+      std::printf("FAIL: circular near-axis field\n");
+      return 1;
+    }
+  }
+  std::printf("OK\n");
+
+  // Off-axis grid: psi = 2 pi r A_phi; cartesian B = (Br cos phi, Br sin phi,
+  // Bz) and A = A_phi (-sin phi, cos phi, 0); J x B matches; par == serial.
+  {
+    constexpr std::size_t kRz = 48;
+    std::vector<double> rz(2 * kRz), xyz(3 * kRz), j(3 * kRz);
+    for (std::size_t i = 0; i < kRz; ++i) {
+      const double r_i = 0.05 + 1.2 * static_cast<double>(i) / kRz;
+      const double z_i = -0.4 + 0.017 * static_cast<double>(i);
+      const double phi = 0.13 * static_cast<double>(i);
+      rz[2 * i] = r_i;
+      rz[2 * i + 1] = z_i;
+      xyz[3 * i] = r_i * std::cos(phi);
+      xyz[3 * i + 1] = r_i * std::sin(phi);
+      xyz[3 * i + 2] = z_i;
+      j[3 * i] = 1.0e6;
+      j[3 * i + 1] = -2.0e6 * std::cos(phi);
+      j[3 * i + 2] = 0.5e6;
+    }
+    std::vector<double> psi(kRz), psi_p(kRz), aphi(kRz), aphi_p(kRz),
+        b_rz(2 * kRz), b_rz_p(2 * kRz), b_xyz(3 * kRz), b_xyz_p(3 * kRz),
+        a_xyz(3 * kRz), a_xyz_p(3 * kRz), f(3 * kRz), f_p(3 * kRz);
+    int rc = 0;
+    for (int par = 0; par < 2; ++par) {
+      rc |= cfsem::flux_circular_filament(rz_loop, i_loop, thin, 1, rz.data(),
+                                          kRz, par,
+                                          par ? psi_p.data() : psi.data());
+      rc |= cfsem::vector_potential_circular_filament(
+          rz_loop, i_loop, thin, 1, rz.data(), kRz, par,
+          par ? aphi_p.data() : aphi.data());
+      rc |= cfsem::flux_density_circular_filament(
+          rz_loop, i_loop, thin, 1, rz.data(), kRz, par,
+          par ? b_rz_p.data() : b_rz.data());
+      rc |= cfsem::flux_density_circular_filament_cartesian(
+          r_loop, i_loop, loc_loop, z_hat, thin, 1, xyz.data(), kRz, par,
+          par ? b_xyz_p.data() : b_xyz.data());
+      rc |= cfsem::vector_potential_circular_filament_cartesian(
+          r_loop, i_loop, loc_loop, z_hat, thin, 1, xyz.data(), kRz, par,
+          par ? a_xyz_p.data() : a_xyz.data());
+      rc |= cfsem::body_force_density_circular_filament(
+          r_loop, i_loop, loc_loop, z_hat, thin, 1, xyz.data(), j.data(), kRz,
+          par, par ? f_p.data() : f.data());
+    }
+    if (rc != 0) {
+      std::printf("FAIL: circular grid calls rc=%d\n", rc);
+      return 1;
+    }
+    double psi_err = 0.0, cart_err = 0.0, a_err = 0.0, f_err = 0.0;
+    for (std::size_t i = 0; i < kRz; ++i) {
+      const double r_i = rz[2 * i];
+      psi_err = std::fmax(psi_err, std::fabs(psi[i] - 2.0 * kPi * r_i * aphi[i]) /
+                                       std::fabs(psi[i]));
+      const double c = xyz[3 * i] / r_i, s = xyz[3 * i + 1] / r_i;
+      const double b_ref[3] = {b_rz[2 * i] * c, b_rz[2 * i] * s, b_rz[2 * i + 1]};
+      const double a_ref[3] = {-aphi[i] * s, aphi[i] * c, 0.0};
+      const double* bv = &b_xyz[3 * i];
+      double diff[3];
+      for (int k = 0; k < 3; ++k) {
+        diff[k] = bv[k] - b_ref[k];
+      }
+      cart_err = std::fmax(cart_err, mag3(diff) / mag3(b_ref));
+      for (int k = 0; k < 3; ++k) {
+        diff[k] = a_xyz[3 * i + k] - a_ref[k];
+      }
+      a_err = std::fmax(a_err, mag3(diff) / mag3(a_ref));
+      const double* jv = &j[3 * i];
+      const double jxb[3] = {jv[1] * bv[2] - jv[2] * bv[1],
+                             jv[2] * bv[0] - jv[0] * bv[2],
+                             jv[0] * bv[1] - jv[1] * bv[0]};
+      for (int k = 0; k < 3; ++k) {
+        diff[k] = f[3 * i + k] - jxb[k];
+      }
+      f_err = std::fmax(f_err, mag3(diff) / mag3(jxb));
+    }
+    const bool par_equal = psi == psi_p && aphi == aphi_p && b_rz == b_rz_p &&
+                           b_xyz == b_xyz_p && a_xyz == a_xyz_p && f == f_p;
+    std::printf("circular grid: psi vs 2 pi r A_phi=%.2e, cartesian vs rotated "
+                "B=%.2e A=%.2e, body force vs J x B=%.2e, par == serial: %s\n",
+                psi_err, cart_err, a_err, f_err, par_equal ? "yes" : "no");
+    if (psi_err > 1e-12 || cart_err > 1e-12 || a_err > 1e-12 || f_err > 1e-10 ||
+        !par_equal) {
+      std::printf("FAIL: circular grid consistency\n");
+      return 1;
+    }
+  }
+  std::printf("OK\n");
+
+  // Pose: a loop centered at c with normal +x. Cyclic map local (x,y,z) -> world
+  // (y,z,x) is a proper rotation taking the local axis to the normal, so world B
+  // at p is (B_loc,z, B_loc,x, B_loc,y) of the coaxial field at local q, where
+  // q = (p_y - c_y, p_z - c_z, p_x - c_x).
+  {
+    constexpr std::size_t kPose = 16;
+    const double c[3] = {0.3, -0.2, 0.7};
+    const double x_hat[3] = {1.0, 0.0, 0.0};
+    const double rz_origin[2] = {loop_r, 0.0};
+    std::vector<double> p(3 * kPose), b(3 * kPose), rz_q(2 * kPose),
+        b_q(2 * kPose);
+    std::vector<double> phi_q(kPose);
+    for (std::size_t i = 0; i < kPose; ++i) {
+      const double qr = 0.1 + 0.08 * static_cast<double>(i);
+      const double qz = -0.3 + 0.05 * static_cast<double>(i);
+      phi_q[i] = 0.4 * static_cast<double>(i);
+      const double q[3] = {qr * std::cos(phi_q[i]), qr * std::sin(phi_q[i]), qz};
+      p[3 * i] = c[0] + q[2];
+      p[3 * i + 1] = c[1] + q[0];
+      p[3 * i + 2] = c[2] + q[1];
+      rz_q[2 * i] = qr;
+      rz_q[2 * i + 1] = qz;
+    }
+    int rc = cfsem::flux_density_circular_filament_cartesian(
+        r_loop, i_loop, c, x_hat, thin, 1, p.data(), kPose, /*par=*/0, b.data());
+    rc |= cfsem::flux_density_circular_filament(rz_origin, i_loop, thin, 1,
+                                                rz_q.data(), kPose, /*par=*/0,
+                                                b_q.data());
+    if (rc != 0) {
+      std::printf("FAIL: circular pose calls rc=%d\n", rc);
+      return 1;
+    }
+    double pose_err = 0.0;
+    for (std::size_t i = 0; i < kPose; ++i) {
+      const double br = b_q[2 * i], bz = b_q[2 * i + 1];
+      const double b_loc[3] = {br * std::cos(phi_q[i]), br * std::sin(phi_q[i]), bz};
+      const double b_ref[3] = {b_loc[2], b_loc[0], b_loc[1]};
+      double diff[3];
+      for (int k = 0; k < 3; ++k) {
+        diff[k] = b[3 * i + k] - b_ref[k];
+      }
+      pose_err = std::fmax(pose_err, mag3(diff) / mag3(b_ref));
+    }
+    std::printf("circular pose (center %.1f,%.1f,%.1f, normal +x) vs coaxial "
+                "rotated: %.2e\n",
+                c[0], c[1], c[2], pose_err);
+    if (pose_err > 1e-12) {
+      std::printf("FAIL: circular pose\n");
+      return 1;
+    }
+  }
+  std::printf("OK\n");
+
+  // Finite wire radius: identical to the ideal filament beyond the 3-radius
+  // blend band, finite on the centerline where the ideal field diverges.
+  {
+    const double wr[1] = {0.01};
+    const double rz_far[4] = {loop_r + 0.05, loop_z, loop_r, loop_z + 0.2};
+    const double rz_on[2] = {loop_r, loop_z};
+    double b_thin[4], b_wire[4], b_on[2];
+    int rc = cfsem::flux_density_circular_filament(rz_loop, i_loop, thin, 1,
+                                                   rz_far, 2, /*par=*/0, b_thin);
+    rc |= cfsem::flux_density_circular_filament(rz_loop, i_loop, wr, 1, rz_far,
+                                                2, /*par=*/0, b_wire);
+    rc |= cfsem::flux_density_circular_filament(rz_loop, i_loop, wr, 1, rz_on,
+                                                1, /*par=*/0, b_on);
+    if (rc != 0) {
+      std::printf("FAIL: circular wire radius calls rc=%d\n", rc);
+      return 1;
+    }
+    double far_err = 0.0;
+    for (int i = 0; i < 2; ++i) {
+      const double d[2] = {b_wire[2 * i] - b_thin[2 * i],
+                           b_wire[2 * i + 1] - b_thin[2 * i + 1]};
+      far_err = std::fmax(far_err, std::hypot(d[0], d[1]) /
+                                       std::hypot(b_thin[2 * i], b_thin[2 * i + 1]));
+    }
+    const bool on_finite = std::isfinite(b_on[0]) && std::isfinite(b_on[1]);
+    std::printf("circular wire radius %.0e m: vs ideal beyond blend=%.2e, "
+                "centerline |B|=%.3e T (finite: %s)\n",
+                wr[0], far_err, std::hypot(b_on[0], b_on[1]),
+                on_finite ? "yes" : "no");
+    if (far_err > 1e-12 || !on_finite) {
+      std::printf("FAIL: circular wire radius\n");
+      return 1;
+    }
+  }
+  std::printf("OK\n");
+
+  // Mutual inductance loop -> coaxial polygon as sum of A(midpoint) . dl per
+  // amp-turn. (Upstream mutual_inductance_circular_to_linear is ~0.8% low on
+  // this case, so it is not exported.) Two independent references: the loop's
+  // flux through the target radius (psi per amp-turn), and a dense
+  // linear-filament M with the source loop discretized too. All converge as
+  // O(1/N^2) in polygon resolution.
+  {
+    constexpr std::size_t kPoly = 720;
+    const double tgt_r = 0.8, tgt_z = 0.45;
+    auto polygon = [](double r, double z, std::vector<double>& start,
+                      std::vector<double>& delta) {
+      start.resize(3 * kPoly);
+      delta.resize(3 * kPoly);
+      for (std::size_t s = 0; s < kPoly; ++s) {
+        const double a0 = 2.0 * kPi * static_cast<double>(s) / kPoly;
+        const double a1 = 2.0 * kPi * static_cast<double>(s + 1) / kPoly;
+        start[3 * s] = r * std::cos(a0);
+        start[3 * s + 1] = r * std::sin(a0);
+        start[3 * s + 2] = z;
+        delta[3 * s] = r * (std::cos(a1) - std::cos(a0));
+        delta[3 * s + 1] = r * (std::sin(a1) - std::sin(a0));
+        delta[3 * s + 2] = 0.0;
+      }
+    };
+    std::vector<double> tgt_start, tgt_delta, src_start, src_delta;
+    polygon(tgt_r, tgt_z, tgt_start, tgt_delta);
+    polygon(loop_r, loop_z, src_start, src_delta);
+
+    const double one_turn[1] = {1.0};
+    std::vector<double> mid(3 * kPoly), a_mid(3 * kPoly);
+    for (std::size_t k = 0; k < 3 * kPoly; ++k) {
+      mid[k] = tgt_start[k] + 0.5 * tgt_delta[k];
+    }
+    double psi_tgt = 0.0;
+    const double rz_tgt[2] = {tgt_r, tgt_z};
+    int rc = cfsem::vector_potential_circular_filament_cartesian(
+        r_loop, one_turn, loc_loop, z_hat, thin, 1, mid.data(), kPoly,
+        /*par=*/0, a_mid.data());
+    rc |= cfsem::flux_circular_filament(rz_loop, one_turn, thin, 1, rz_tgt, 1,
+                                        /*par=*/0, &psi_tgt);
+
+    const std::vector<double> src_wr(kPoly, 1.0e-4);
+    std::vector<double> m_col(kPoly);
+    rc |= cfsem::inductance_linear_filaments(
+        tgt_start.data(), tgt_delta.data(), kPoly, src_start.data(),
+        src_delta.data(), src_wr.data(), kPoly, m_col.data());
+    if (rc != 0) {
+      std::printf("FAIL: circular-to-linear calls rc=%d\n", rc);
+      return 1;
+    }
+    double m_lin = 0.0, m_circ = 0.0;
+    for (double v : m_col) {
+      m_lin += v;
+    }
+    for (std::size_t k = 0; k < 3 * kPoly; ++k) {
+      m_circ += a_mid[k] * tgt_delta[k];
+    }
+    const double rel_psi = std::fabs(m_circ - psi_tgt) / psi_tgt;
+    const double rel_lin = std::fabs(m_circ - m_lin) / m_lin;
+    std::printf("circular->linear M=%.6e H; vs psi/I=%.6e (rel %.2e), vs "
+                "polygon-polygon M=%.6e (rel %.2e)\n",
+                m_circ, psi_tgt, rel_psi, m_lin, rel_lin);
+    if (rel_psi > 1e-4 || rel_lin > 1e-4) {
+      std::printf("FAIL: circular-to-linear inductance\n");
+      return 1;
+    }
+  }
+  std::printf("OK\n");
   return 0;
 }

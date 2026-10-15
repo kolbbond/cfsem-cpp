@@ -13,6 +13,9 @@
 //! de-interleaves into temporary component vectors (an O(N) copy per call —
 //! acceptable for a validation/reference backend) and re-interleaves the result.
 //!
+//! Axisymmetric (circular-filament) coordinates are interleaved `2xN` `(r, z)`
+//! by the same rule.
+//!
 //! ## Panic safety
 //!
 //! A Rust `panic!` unwinding across the FFI boundary is undefined behavior, so
@@ -702,6 +705,406 @@ pub unsafe extern "C" fn cfsem_body_force_density_linear_filament(
     .unwrap_or(3)
 }
 
+/// Poloidal flux (Wb) from circular filaments at `(r, z)` observation points —
+/// total flux through the loop of radius `r`, i.e. `2π r A_φ`. Wraps
+/// [`cfsem::physics::circular_filament::flux_circular_filament`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_flux_circular_filament(
+    rz_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    rz_obs: *const f64,
+    n_obs: usize,
+    par: i32,
+    psi_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let f: CircularScalarFn = if par != 0 {
+            cfsem::physics::circular_filament::flux_circular_filament_par
+        } else {
+            cfsem::physics::circular_filament::flux_circular_filament
+        };
+        circular_filament_scalar(rz_fil, ifil, wire_radius, n_fil, rz_obs, n_obs, psi_out, f)
+    }))
+    .unwrap_or(3)
+}
+
+/// Toroidal vector potential `A_φ` (V·s/m) from circular filaments at `(r, z)`
+/// observation points; `A_r = A_z = 0` by symmetry. Wraps
+/// [`cfsem::physics::circular_filament::vector_potential_circular_filament`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_vector_potential_circular_filament(
+    rz_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    rz_obs: *const f64,
+    n_obs: usize,
+    par: i32,
+    a_phi_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let f: CircularScalarFn = if par != 0 {
+            cfsem::physics::circular_filament::vector_potential_circular_filament_par
+        } else {
+            cfsem::physics::circular_filament::vector_potential_circular_filament
+        };
+        circular_filament_scalar(
+            rz_fil,
+            ifil,
+            wire_radius,
+            n_fil,
+            rz_obs,
+            n_obs,
+            a_phi_out,
+            f,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// `(B_r, B_z)` (T) from circular filaments at `(r, z)` observation points,
+/// interleaved `2 x n_obs`. Wraps
+/// [`cfsem::physics::circular_filament::flux_density_circular_filament`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_flux_density_circular_filament(
+    rz_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    rz_obs: *const f64,
+    n_obs: usize,
+    par: i32,
+    b_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if rz_fil.is_null()
+            || ifil.is_null()
+            || wire_radius.is_null()
+            || rz_obs.is_null()
+            || b_out.is_null()
+        {
+            return 2;
+        }
+        let (rfil, zfil) = deinterleave2(slice::from_raw_parts(rz_fil, 2 * n_fil), n_fil);
+        let ifil = slice::from_raw_parts(ifil, n_fil);
+        let wire_radius = slice::from_raw_parts(wire_radius, n_fil);
+        let (robs, zobs) = deinterleave2(slice::from_raw_parts(rz_obs, 2 * n_obs), n_obs);
+
+        let mut br = vec![0.0_f64; n_obs];
+        let mut bz = vec![0.0_f64; n_obs];
+        let f = if par != 0 {
+            cfsem::physics::circular_filament::flux_density_circular_filament_par
+        } else {
+            cfsem::physics::circular_filament::flux_density_circular_filament
+        };
+        if f(
+            (&rfil, &zfil, ifil),
+            wire_radius,
+            (&robs, &zobs),
+            (&mut br, &mut bz),
+        )
+        .is_err()
+        {
+            return 1;
+        }
+        interleave2(slice::from_raw_parts_mut(b_out, 2 * n_obs), &br, &bz);
+        0
+    }))
+    .unwrap_or(3)
+}
+
+/// Cartesian B (T) from arbitrarily located and oriented circular filaments at
+/// interleaved `3 x n_obs` observation points. Wraps
+/// [`cfsem::physics::circular_filament::flux_density_circular_filament_cartesian`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_flux_density_circular_filament_cartesian(
+    r_fil: *const f64,
+    ifil: *const f64,
+    loc: *const f64,
+    normal: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    rs_obs: *const f64,
+    n_obs: usize,
+    par: i32,
+    b_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let f: CircularCartesianFn = if par != 0 {
+            cfsem::physics::circular_filament::flux_density_circular_filament_cartesian_par
+        } else {
+            cfsem::physics::circular_filament::flux_density_circular_filament_cartesian
+        };
+        circular_filament_cartesian(
+            r_fil,
+            ifil,
+            loc,
+            normal,
+            wire_radius,
+            n_fil,
+            rs_obs,
+            n_obs,
+            b_out,
+            f,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// Cartesian A (V·s/m) from arbitrarily located and oriented circular filaments at
+/// interleaved `3 x n_obs` observation points. Wraps
+/// [`cfsem::physics::circular_filament::vector_potential_circular_filament_cartesian`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_vector_potential_circular_filament_cartesian(
+    r_fil: *const f64,
+    ifil: *const f64,
+    loc: *const f64,
+    normal: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    rs_obs: *const f64,
+    n_obs: usize,
+    par: i32,
+    a_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let f: CircularCartesianFn = if par != 0 {
+            cfsem::physics::circular_filament::vector_potential_circular_filament_cartesian_par
+        } else {
+            cfsem::physics::circular_filament::vector_potential_circular_filament_cartesian
+        };
+        circular_filament_cartesian(
+            r_fil,
+            ifil,
+            loc,
+            normal,
+            wire_radius,
+            n_fil,
+            rs_obs,
+            n_obs,
+            a_out,
+            f,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// J×B body force density (N/m³) on current density `j_obs` (A/m²) at interleaved
+/// `3 x n_obs` points, from arbitrarily located and oriented circular filaments.
+/// Wraps
+/// [`cfsem::physics::circular_filament::body_force_density_circular_filament_cartesian`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_body_force_density_circular_filament(
+    r_fil: *const f64,
+    ifil: *const f64,
+    loc: *const f64,
+    normal: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    rs_obs: *const f64,
+    j_obs: *const f64,
+    n_obs: usize,
+    par: i32,
+    f_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if rs_obs.is_null() || j_obs.is_null() || f_out.is_null() {
+            return 2;
+        }
+        let Some(pose) = CircularPose::new(r_fil, ifil, loc, normal, wire_radius, n_fil) else {
+            return 2;
+        };
+        let (xp, yp, zp) = deinterleave3(slice::from_raw_parts(rs_obs, 3 * n_obs), n_obs);
+        let (jx, jy, jz) = deinterleave3(slice::from_raw_parts(j_obs, 3 * n_obs), n_obs);
+
+        let mut ox = vec![0.0_f64; n_obs];
+        let mut oy = vec![0.0_f64; n_obs];
+        let mut oz = vec![0.0_f64; n_obs];
+        let f = if par != 0 {
+            cfsem::physics::circular_filament::body_force_density_circular_filament_cartesian_par
+        } else {
+            cfsem::physics::circular_filament::body_force_density_circular_filament_cartesian
+        };
+        if f(
+            (pose.r, pose.i),
+            (&pose.loc.0, &pose.loc.1, &pose.loc.2),
+            (&pose.normal.0, &pose.normal.1, &pose.normal.2),
+            pose.wire_radius,
+            (&xp, &yp, &zp),
+            (&jx, &jy, &jz),
+            (&mut ox, &mut oy, &mut oz),
+        )
+        .is_err()
+        {
+            return 1;
+        }
+        interleave3(slice::from_raw_parts_mut(f_out, 3 * n_obs), &ox, &oy, &oz);
+        0
+    }))
+    .unwrap_or(3)
+}
+
+/// Signature shared by the circular-filament functions with one scalar output per
+/// `(r, z)` observation point (flux, `A_φ`).
+type CircularScalarFn =
+    fn((&[f64], &[f64], &[f64]), &[f64], (&[f64], &[f64]), &mut [f64]) -> Result<(), &'static str>;
+
+/// Signature shared by the Cartesian circular-filament functions with one vector
+/// output per observation point (B, A).
+type CircularCartesianFn = fn(
+    (&[f64], &[f64]),
+    (&[f64], &[f64], &[f64]),
+    (&[f64], &[f64], &[f64]),
+    &[f64],
+    (&[f64], &[f64], &[f64]),
+    (&mut [f64], &mut [f64], &mut [f64]),
+) -> Result<(), &'static str>;
+
+/// Source poses for the Cartesian circular-filament wrappers, de-interleaved.
+struct CircularPose<'a> {
+    r: &'a [f64],
+    i: &'a [f64],
+    loc: (Vec<f64>, Vec<f64>, Vec<f64>),
+    normal: (Vec<f64>, Vec<f64>, Vec<f64>),
+    wire_radius: &'a [f64],
+}
+
+impl CircularPose<'_> {
+    /// `None` if any pointer is null.
+    ///
+    /// # Safety
+    ///
+    /// Non-null pointers must be sized as documented in `cfsem.h`.
+    unsafe fn new(
+        r_fil: *const f64,
+        ifil: *const f64,
+        loc: *const f64,
+        normal: *const f64,
+        wire_radius: *const f64,
+        n: usize,
+    ) -> Option<Self> {
+        if r_fil.is_null()
+            || ifil.is_null()
+            || loc.is_null()
+            || normal.is_null()
+            || wire_radius.is_null()
+        {
+            return None;
+        }
+        Some(Self {
+            r: slice::from_raw_parts(r_fil, n),
+            i: slice::from_raw_parts(ifil, n),
+            loc: deinterleave3(slice::from_raw_parts(loc, 3 * n), n),
+            normal: deinterleave3(slice::from_raw_parts(normal, 3 * n), n),
+            wire_radius: slice::from_raw_parts(wire_radius, n),
+        })
+    }
+}
+
+/// Shared body of the scalar-output circular-filament wrappers.
+///
+/// # Safety
+///
+/// Every pointer must be non-null and sized as documented in `cfsem.h`.
+unsafe fn circular_filament_scalar(
+    rz_fil: *const f64,
+    ifil: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    rz_obs: *const f64,
+    n_obs: usize,
+    out: *mut f64,
+    f: CircularScalarFn,
+) -> i32 {
+    if rz_fil.is_null()
+        || ifil.is_null()
+        || wire_radius.is_null()
+        || rz_obs.is_null()
+        || out.is_null()
+    {
+        return 2;
+    }
+    let (rfil, zfil) = deinterleave2(slice::from_raw_parts(rz_fil, 2 * n_fil), n_fil);
+    let ifil = slice::from_raw_parts(ifil, n_fil);
+    let wire_radius = slice::from_raw_parts(wire_radius, n_fil);
+    let (robs, zobs) = deinterleave2(slice::from_raw_parts(rz_obs, 2 * n_obs), n_obs);
+    let out = slice::from_raw_parts_mut(out, n_obs);
+    if f((&rfil, &zfil, ifil), wire_radius, (&robs, &zobs), out).is_err() {
+        return 1;
+    }
+    0
+}
+
+/// Shared body of the vector-output Cartesian circular-filament wrappers.
+///
+/// # Safety
+///
+/// Every pointer must be non-null and sized as documented in `cfsem.h`.
+unsafe fn circular_filament_cartesian(
+    r_fil: *const f64,
+    ifil: *const f64,
+    loc: *const f64,
+    normal: *const f64,
+    wire_radius: *const f64,
+    n_fil: usize,
+    rs_obs: *const f64,
+    n_obs: usize,
+    out: *mut f64,
+    f: CircularCartesianFn,
+) -> i32 {
+    if rs_obs.is_null() || out.is_null() {
+        return 2;
+    }
+    let Some(pose) = CircularPose::new(r_fil, ifil, loc, normal, wire_radius, n_fil) else {
+        return 2;
+    };
+    let (xp, yp, zp) = deinterleave3(slice::from_raw_parts(rs_obs, 3 * n_obs), n_obs);
+
+    let mut ox = vec![0.0_f64; n_obs];
+    let mut oy = vec![0.0_f64; n_obs];
+    let mut oz = vec![0.0_f64; n_obs];
+    if f(
+        (pose.r, pose.i),
+        (&pose.loc.0, &pose.loc.1, &pose.loc.2),
+        (&pose.normal.0, &pose.normal.1, &pose.normal.2),
+        pose.wire_radius,
+        (&xp, &yp, &zp),
+        (&mut ox, &mut oy, &mut oz),
+    )
+    .is_err()
+    {
+        return 1;
+    }
+    interleave3(slice::from_raw_parts_mut(out, 3 * n_obs), &ox, &oy, &oz);
+    0
+}
+
 /// Signature shared by the dense inductance functions in `cfsem`: target segments,
 /// source segments, source radii, then a flat output.
 type InductanceFn = fn(
@@ -1335,5 +1738,24 @@ fn interleave3(out: &mut [f64], xs: &[f64], ys: &[f64], zs: &[f64]) {
         chunk[0] = xs[i];
         chunk[1] = ys[i];
         chunk[2] = zs[i];
+    }
+}
+
+/// Split an interleaved `[r0,z0, r1,z1, ...]` slice of length `2 * n` into
+/// `(rs, zs)`, each length `n`.
+fn deinterleave2(rz: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+    let (mut rs, mut zs) = (Vec::with_capacity(n), Vec::with_capacity(n));
+    for pair in rz.chunks_exact(2) {
+        rs.push(pair[0]);
+        zs.push(pair[1]);
+    }
+    (rs, zs)
+}
+
+/// Inverse of [`deinterleave2`].
+fn interleave2(out: &mut [f64], rs: &[f64], zs: &[f64]) {
+    for (i, pair) in out.chunks_exact_mut(2).enumerate() {
+        pair[0] = rs[i];
+        pair[1] = zs[i];
     }
 }
