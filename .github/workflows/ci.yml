@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cfsem-capi
+
+      - name: Format
+        working-directory: cfsem-capi
+        run: cargo fmt --check
+
+      - name: Lint
+        working-directory: cfsem-capi
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # cfsem.h must stay consumable from plain C, not just via cfsem.hpp.
+      - name: C header
+        run: cc -std=c99 -Wall -Wextra -pedantic -Werror -fsyntax-only -x c include/cfsem.h
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+
+      - name: Smoke test
+        run: ./build/cfsem-cpp
