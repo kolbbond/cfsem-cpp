@@ -11,6 +11,7 @@
 #define CFSEM_HPP
 
 #include <cstddef> // std::size_t
+#include <cstdint> // std::int64_t
 
 #include "cfsem.h"
 
@@ -218,6 +219,51 @@ inline int body_force_density_circular_filament(
   return ::cfsem_body_force_density_circular_filament(
       r_fil, ifil, loc, normal, wire_radius, n_fil, rs_obs, j_obs, n_obs, par,
       f_out);
+}
+
+// Triangle-mesh (boundary-element) fields from a nodal stream function s [A];
+// triangles are interleaved 3xN int64 node indices. See cfsem.h.
+inline int flux_density_triangle_mesh(
+    const double* nodes, std::size_t n_node, const std::int64_t* triangles,
+    std::size_t n_tri, const double* s, const double* rs_obs,
+    std::size_t n_obs, int par, double* b_out) {
+  return ::cfsem_flux_density_triangle_mesh(
+      nodes, n_node, triangles, n_tri, s, rs_obs, n_obs, par, b_out);
+}
+
+inline int vector_potential_triangle_mesh(
+    const double* nodes, std::size_t n_node, const std::int64_t* triangles,
+    std::size_t n_tri, const double* s, const double* rs_obs,
+    std::size_t n_obs, int par, double* a_out) {
+  return ::cfsem_vector_potential_triangle_mesh(
+      nodes, n_node, triangles, n_tri, s, rs_obs, n_obs, par, a_out);
+}
+
+// Hierarchical (approximate) triangle-mesh B and A.
+inline int flux_density_triangle_mesh_hierarchical(
+    const double* nodes, std::size_t n_node, const std::int64_t* triangles,
+    std::size_t n_tri, const double* s, const double* rs_obs,
+    std::size_t n_obs, double theta, int par, int skip, double* b_out) {
+  return ::cfsem_flux_density_triangle_mesh_hierarchical(
+      nodes, n_node, triangles, n_tri, s, rs_obs, n_obs, theta, par, skip,
+      b_out);
+}
+
+inline int vector_potential_triangle_mesh_hierarchical(
+    const double* nodes, std::size_t n_node, const std::int64_t* triangles,
+    std::size_t n_tri, const double* s, const double* rs_obs,
+    std::size_t n_obs, double theta, int par, int skip, double* a_out) {
+  return ::cfsem_vector_potential_triangle_mesh_hierarchical(
+      nodes, n_node, triangles, n_tri, s, rs_obs, n_obs, theta, par, skip,
+      a_out);
+}
+
+// Dense n_node x n_node nodal inductance matrix (H); quad_kind 1..5.
+inline int triangle_mesh_inductance_matrix(
+    const double* nodes, std::size_t n_node, const std::int64_t* triangles,
+    std::size_t n_tri, int quad_kind, int par, double* l_out) {
+  return ::cfsem_triangle_mesh_inductance_matrix(
+      nodes, n_node, triangles, n_tri, quad_kind, par, l_out);
 }
 
 // Persistent Barnes-Hut tree over fixed filament geometry; see cfsem.h.

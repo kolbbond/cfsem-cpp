@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <vector>
 
@@ -749,6 +750,247 @@ int main() {
                 m_circ, psi_tgt, rel_psi, m_lin, rel_lin);
     if (rel_psi > 1e-4 || rel_lin > 1e-4) {
       std::printf("FAIL: circular-to-linear inductance\n");
+      return 1;
+    }
+  }
+  std::printf("OK\n");
+
+  // Triangle mesh: faceted cylinder carrying an azimuthal current sheet, s linear
+  // in z, so the total current is s_top - s_bottom.
+  {
+    const double rad = 0.1, len = 0.2, i_tot = 1.0e3; // (m), (m), (A)
+    struct Mesh {
+      std::vector<double> nodes, s;
+      std::vector<std::int64_t> tris;
+      std::size_t n_node() const { return s.size(); }
+      std::size_t n_tri() const { return tris.size() / 3; }
+    };
+    auto cylinder = [&](std::size_t nphi, std::size_t nz) {
+      Mesh m;
+      for (std::size_t j = 0; j <= nz; ++j) {
+        const double z = -0.5 * len + len * double(j) / double(nz);
+        for (std::size_t k = 0; k < nphi; ++k) {
+          const double phi = 2.0 * kPi * double(k) / double(nphi);
+          m.nodes.insert(m.nodes.end(),
+                         {rad * std::cos(phi), rad * std::sin(phi), z});
+          m.s.push_back(i_tot * double(j) / double(nz));
+        }
+      }
+      for (std::size_t j = 0; j < nz; ++j) {
+        for (std::size_t k = 0; k < nphi; ++k) {
+          const auto n = [&](std::size_t jj, std::size_t kk) {
+            return std::int64_t(jj * nphi + kk % nphi);
+          };
+          m.tris.insert(m.tris.end(), {n(j, k), n(j, k + 1), n(j + 1, k + 1)});
+          m.tris.insert(m.tris.end(), {n(j, k), n(j + 1, k + 1), n(j + 1, k)});
+        }
+      }
+      return m;
+    };
+
+    // Center field vs the finite solenoid; the inscribed facets shrink the
+    // effective radius, an O((pi/nphi)^2) bias.
+    const Mesh fine = cylinder(128, 32);
+    const double center[3] = {0.0, 0.0, 0.0};
+    double b_c[3];
+    int rc = cfsem::flux_density_triangle_mesh(
+        fine.nodes.data(), fine.n_node(), fine.tris.data(), fine.n_tri(),
+        fine.s.data(), center, 1, /*par=*/0, b_c);
+    const double bz_exact = kMu0 * (i_tot / len) * (0.5 * len) /
+                            std::sqrt(0.25 * len * len + rad * rad);
+    const double rel_bz = std::fabs(std::fabs(b_c[2]) - bz_exact) / bz_exact;
+
+    // curl A vs B by central differences at an interior point.
+    const double p[3] = {0.03, 0.02, 0.01}, h = 1.0e-5;
+    double probe[18], a_p[18], b_p[3];
+    for (int d = 0; d < 3; ++d) {
+      for (int sgn = 0; sgn < 2; ++sgn) {
+        double* q = probe + 3 * (2 * d + sgn);
+        q[0] = p[0], q[1] = p[1], q[2] = p[2];
+        q[d] += sgn ? h : -h;
+      }
+    }
+    rc |= cfsem::vector_potential_triangle_mesh(
+        fine.nodes.data(), fine.n_node(), fine.tris.data(), fine.n_tri(),
+        fine.s.data(), probe, 6, /*par=*/1, a_p);
+    rc |= cfsem::flux_density_triangle_mesh(
+        fine.nodes.data(), fine.n_node(), fine.tris.data(), fine.n_tri(),
+        fine.s.data(), p, 1, /*par=*/1, b_p);
+    // dA_i/dx_d from probes (2d, 2d+1)
+    const auto da = [&](int i, int d) {
+      return (a_p[3 * (2 * d + 1) + i] - a_p[3 * (2 * d) + i]) / (2.0 * h);
+    };
+    const double curl[3] = {da(2, 1) - da(1, 2), da(0, 2) - da(2, 0),
+                            da(1, 0) - da(0, 1)};
+    const double rel_curl =
+        std::sqrt(std::pow(curl[0] - b_p[0], 2) + std::pow(curl[1] - b_p[1], 2) +
+                  std::pow(curl[2] - b_p[2], 2)) /
+        mag3(b_p);
+
+    // Hierarchical vs direct over a line through the wall, plus the near/far
+    // partition and serial/parallel equality.
+    constexpr std::size_t kLine = 64;
+    std::vector<double> line(3 * kLine);
+    for (std::size_t k = 0; k < kLine; ++k) {
+      line[3 * k] = 0.25 * rad + 1.5 * rad * double(k) / double(kLine);
+      line[3 * k + 1] = 0.1 * rad;
+      line[3 * k + 2] = 0.3 * len * double(k) / double(kLine) - 0.1 * len;
+    }
+    std::vector<double> b_dir(3 * kLine), b_ser(3 * kLine), b_hier(3 * kLine),
+        b_near(3 * kLine), b_far(3 * kLine), a_dir(3 * kLine),
+        a_hier(3 * kLine);
+    const double theta = 0.5;
+    const auto* nd = fine.nodes.data();
+    const auto* tr = fine.tris.data();
+    const auto* sv = fine.s.data();
+    const std::size_t nn = fine.n_node(), nt = fine.n_tri();
+    rc |= cfsem::flux_density_triangle_mesh(nd, nn, tr, nt, sv, line.data(),
+                                            kLine, 1, b_dir.data());
+    rc |= cfsem::flux_density_triangle_mesh(nd, nn, tr, nt, sv, line.data(),
+                                            kLine, 0, b_ser.data());
+    rc |= cfsem::vector_potential_triangle_mesh(nd, nn, tr, nt, sv, line.data(),
+                                                kLine, 1, a_dir.data());
+    rc |= cfsem::flux_density_triangle_mesh_hierarchical(
+        nd, nn, tr, nt, sv, line.data(), kLine, theta, 1, CFSEM_SKIP_NONE,
+        b_hier.data());
+    rc |= cfsem::flux_density_triangle_mesh_hierarchical(
+        nd, nn, tr, nt, sv, line.data(), kLine, theta, 1, CFSEM_SKIP_FAR,
+        b_near.data());
+    rc |= cfsem::flux_density_triangle_mesh_hierarchical(
+        nd, nn, tr, nt, sv, line.data(), kLine, theta, 1, CFSEM_SKIP_NEAR,
+        b_far.data());
+    rc |= cfsem::vector_potential_triangle_mesh_hierarchical(
+        nd, nn, tr, nt, sv, line.data(), kLine, theta, 1, CFSEM_SKIP_NONE,
+        a_hier.data());
+    // max-norm error relative to the max field on the line
+    const auto rel_max = [](const std::vector<double>& x,
+                            const std::vector<double>& ref) {
+      double num = 0.0, den = 0.0;
+      for (std::size_t k = 0; k < x.size(); ++k) {
+        num = std::fmax(num, std::fabs(x[k] - ref[k]));
+        den = std::fmax(den, std::fabs(ref[k]));
+      }
+      return num / den;
+    };
+    std::vector<double> b_sum(3 * kLine);
+    for (std::size_t k = 0; k < b_sum.size(); ++k) {
+      b_sum[k] = b_near[k] + b_far[k];
+    }
+    const double rel_hier_b = rel_max(b_hier, b_dir);
+    const double rel_hier_a = rel_max(a_hier, a_dir);
+    const double rel_part = rel_max(b_sum, b_hier);
+    const bool par_eq = b_ser == b_dir;
+
+    if (rc != 0) {
+      std::printf("FAIL: triangle-mesh field calls rc=%d\n", rc);
+      return 1;
+    }
+    std::printf("triangle mesh (%zu tris): center |Bz| rel_err=%.2e, curl A vs "
+                "B=%.2e, par == serial: %s\n",
+                nt, rel_bz, rel_curl, par_eq ? "yes" : "no");
+    std::printf("triangle mesh hierarchical (theta=%.2f): B rel=%.2e, A "
+                "rel=%.2e, near+far vs full=%.2e\n",
+                theta, rel_hier_b, rel_hier_a, rel_part);
+    if (rel_bz > 1e-3 || rel_curl > 1e-6 || !par_eq || rel_hier_b > 1e-2 ||
+        rel_hier_a > 1e-2 || rel_part > 1e-12) {
+      std::printf("FAIL: triangle-mesh fields\n");
+      return 1;
+    }
+    std::printf("OK\n");
+
+    // Inductance: s^T L s / 2 vs 1/2 int K.A dS, A from the mesh's own field at
+    // the degree-2 rule (2/3, 1/6, 1/6); K = n x grad s = -sum_i s_i e_i / 2area,
+    // e_i the edge opposite node i taken counterclockwise about n.
+    const Mesh coarse = cylinder(32, 8);
+    const std::size_t cn = coarse.n_node(), ct = coarse.n_tri();
+    std::vector<double> lmat(cn * cn), lmat_ser(cn * cn);
+    rc = cfsem::triangle_mesh_inductance_matrix(coarse.nodes.data(), cn,
+                                                coarse.tris.data(), ct, 5, 1,
+                                                lmat.data());
+    rc |= cfsem::triangle_mesh_inductance_matrix(coarse.nodes.data(), cn,
+                                                 coarse.tris.data(), ct, 5, 0,
+                                                 lmat_ser.data());
+    double asym = 0.0, l_max = 0.0, e_l = 0.0;
+    for (std::size_t a = 0; a < cn; ++a) {
+      for (std::size_t b = 0; b < cn; ++b) {
+        asym = std::fmax(asym, std::fabs(lmat[a * cn + b] - lmat[b * cn + a]));
+        l_max = std::fmax(l_max, std::fabs(lmat[a * cn + b]));
+        e_l += 0.5 * coarse.s[a] * lmat[a * cn + b] * coarse.s[b];
+      }
+    }
+    double lmat_par_diff = 0.0;
+    for (std::size_t k = 0; k < lmat.size(); ++k) {
+      lmat_par_diff = std::fmax(lmat_par_diff, std::fabs(lmat[k] - lmat_ser[k]));
+    }
+
+    std::vector<double> qp(9 * ct), a_q(9 * ct), k_t(3 * ct), area(ct);
+    const double bary[3][3] = {{2.0 / 3, 1.0 / 6, 1.0 / 6},
+                               {1.0 / 6, 2.0 / 3, 1.0 / 6},
+                               {1.0 / 6, 1.0 / 6, 2.0 / 3}};
+    for (std::size_t t = 0; t < ct; ++t) {
+      const double* v[3];
+      double sv3[3];
+      for (int i = 0; i < 3; ++i) {
+        const auto idx = std::size_t(coarse.tris[3 * t + i]);
+        v[i] = &coarse.nodes[3 * idx];
+        sv3[i] = coarse.s[idx];
+      }
+      const double e1[3] = {v[1][0] - v[0][0], v[1][1] - v[0][1],
+                            v[1][2] - v[0][2]};
+      const double e2[3] = {v[2][0] - v[0][0], v[2][1] - v[0][1],
+                            v[2][2] - v[0][2]};
+      const double cr[3] = {e1[1] * e2[2] - e1[2] * e2[1],
+                            e1[2] * e2[0] - e1[0] * e2[2],
+                            e1[0] * e2[1] - e1[1] * e2[0]};
+      const double twice_area = mag3(cr);
+      area[t] = 0.5 * twice_area;
+      for (int c = 0; c < 3; ++c) {
+        double kc = 0.0;
+        for (int i = 0; i < 3; ++i) {
+          kc -= sv3[i] * (v[(i + 2) % 3][c] - v[(i + 1) % 3][c]);
+        }
+        k_t[3 * t + c] = kc / twice_area;
+        for (int q = 0; q < 3; ++q) {
+          qp[9 * t + 3 * q + c] = bary[q][0] * v[0][c] + bary[q][1] * v[1][c] +
+                                  bary[q][2] * v[2][c];
+        }
+      }
+    }
+    rc |= cfsem::vector_potential_triangle_mesh(
+        coarse.nodes.data(), cn, coarse.tris.data(), ct, coarse.s.data(),
+        qp.data(), 3 * ct, /*par=*/1, a_q.data());
+    double e_a = 0.0;
+    for (std::size_t t = 0; t < ct; ++t) {
+      for (int q = 0; q < 3; ++q) {
+        for (int c = 0; c < 3; ++c) {
+          e_a += 0.5 * (area[t] / 3.0) * k_t[3 * t + c] * a_q[9 * t + 3 * q + c];
+        }
+      }
+    }
+
+    // Status contract: bad quadrature rule (5), out-of-range node index (1).
+    std::vector<std::int64_t> bad = coarse.tris;
+    bad[0] = std::int64_t(cn);
+    double b_bad[3];
+    const int rc_quad = cfsem::triangle_mesh_inductance_matrix(
+        coarse.nodes.data(), cn, coarse.tris.data(), ct, 0, 0, lmat.data());
+    const int rc_idx = cfsem::flux_density_triangle_mesh(
+        coarse.nodes.data(), cn, bad.data(), ct, coarse.s.data(), center, 1, 0,
+        b_bad);
+
+    if (rc != 0) {
+      std::printf("FAIL: triangle-mesh inductance calls rc=%d\n", rc);
+      return 1;
+    }
+    const double rel_e = std::fabs(e_l - e_a) / std::fabs(e_l);
+    std::printf("triangle mesh L (%zux%zu): asymmetry=%.2e, par vs serial=%.2e, "
+                "energy s^T L s/2=%.6e J vs 1/2 int K.A=%.6e J (rel %.2e); "
+                "rc bad quad=%d, bad index=%d\n",
+                cn, cn, asym / l_max, lmat_par_diff / l_max, e_l, e_a, rel_e,
+                rc_quad, rc_idx);
+    if (asym / l_max > 1e-14 || lmat_par_diff / l_max > 1e-12 || rel_e > 1e-2 ||
+        rc_quad != 5 || rc_idx != 1) {
+      std::printf("FAIL: triangle-mesh inductance\n");
       return 1;
     }
   }

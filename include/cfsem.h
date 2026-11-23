@@ -28,6 +28,7 @@
 #define CFSEM_H
 
 #include <stddef.h> /* size_t */
+#include <stdint.h> /* int64_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -328,6 +329,78 @@ int cfsem_body_force_density_circular_filament(
     const double* rs_obs, const double* j_obs, size_t n_obs,
     int par,
     double* f_out);
+
+/*
+ * Triangle-mesh surface currents (boundary elements): K = n x grad s [A/m], s a
+ * piecewise-linear nodal stream function and n the unit normal of each
+ * triangle's winding, (p1 - p0) x (p2 - p0). Current flows along level lines of
+ * s; the current crossing a path between two nodes is the difference of their s
+ * values. Shared arguments:
+ *
+ *   nodes      [in]  interleaved 3xN node coords,          length 3*n_node  [m]
+ *   triangles  [in]  interleaved 3xN node indices (0-based), length 3*n_tri
+ *                    (row-major (n_tri, 3) == an arma::Mat<int64_t>(3, n_tri))
+ *   s          [in]  nodal stream function,                length n_node    [A]
+ *   rs_obs     [in]  interleaved observation points,       length 3*n_obs   [m]
+ *   par        [in]  nonzero = parallel
+ *
+ * Direct fields are exact per triangle; for B, a point on a triangle gets zero
+ * from that triangle. An out-of-range index or zero-area triangle returns 1.
+ * Each returns a status code; outputs are interleaved, length 3*n_obs.
+ */
+
+/* B (T). */
+int cfsem_flux_density_triangle_mesh(
+    const double* nodes, size_t n_node,
+    const int64_t* triangles, size_t n_tri,
+    const double* s,
+    const double* rs_obs, size_t n_obs,
+    int par,
+    double* b_out);
+
+/* A (V*s/m). */
+int cfsem_vector_potential_triangle_mesh(
+    const double* nodes, size_t n_node,
+    const int64_t* triangles, size_t n_tri,
+    const double* s,
+    const double* rs_obs, size_t n_obs,
+    int par,
+    double* a_out);
+
+/* Hierarchical B (T) and A (V*s/m). theta and skip as in the linear-filament
+ * hierarchical functions; APPROXIMATE, the same caveats apply. */
+int cfsem_flux_density_triangle_mesh_hierarchical(
+    const double* nodes, size_t n_node,
+    const int64_t* triangles, size_t n_tri,
+    const double* s,
+    const double* rs_obs, size_t n_obs,
+    double theta, int par, int skip,
+    double* b_out);
+
+int cfsem_vector_potential_triangle_mesh_hierarchical(
+    const double* nodes, size_t n_node,
+    const int64_t* triangles, size_t n_tri,
+    const double* s,
+    const double* rs_obs, size_t n_obs,
+    double theta, int par, int skip,
+    double* a_out);
+
+/*
+ * Dense nodal inductance matrix (H): L_ab = mu0/4pi int int K_a.K_b / |r - r'|
+ * over the nodal stream-function bases K_a; energy = s^T L s / 2.
+ * Symmetric to rounding (the parallel reduction reorders sums).
+ *
+ *   quad_kind [in]  Dunavant rule 1..5 for well-separated pairs (near and self
+ *                   pairs always use 5); anything else returns 5
+ *   l_out     [out] n_node x n_node, caller-allocated
+ *
+ * Returns 5 if n_node*n_node overflows.
+ */
+int cfsem_triangle_mesh_inductance_matrix(
+    const double* nodes, size_t n_node,
+    const int64_t* triangles, size_t n_tri,
+    int quad_kind, int par,
+    double* l_out);
 
 /*
  * Persistent Barnes-Hut tree over fixed filament geometry. The one-shot

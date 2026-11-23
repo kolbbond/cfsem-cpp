@@ -47,6 +47,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
 use std::time::Instant;
 
+use cfsem::mesh::TriangleMeshView;
 use cfsem::physics::hierarchical::kernels::{
     DipoleTarget, DipoleTargets, LinearFilamentFluxDensityKernel, LinearFilamentFluxDensitySummary,
     LinearFilamentSource, LinearFilamentSources, LinearFilamentVectorPotentialKernel,
@@ -1709,6 +1710,335 @@ where
 
     interleave3(slice::from_raw_parts_mut(out, 3 * n_obs), &ox, &oy, &oz);
     t.eval_seconds = start.elapsed().as_secs_f64();
+    0
+}
+
+/// Signature shared by the direct triangle-mesh field functions in `cfsem`.
+type TriangleMeshFn = fn(
+    (&[f64], &[f64], &[f64]),
+    &TriangleMeshView<'_>,
+    &[f64],
+    (&mut [f64], &mut [f64], &mut [f64]),
+) -> Result<(), &'static str>;
+
+/// Evaluator passed to [`triangle_mesh_field`]: `(obs, mesh, s, theta, par, out)`,
+/// `true` on success. Direct solves pick serial/parallel up front and ignore both.
+type TriangleMeshEval<'f> = &'f dyn Fn(
+    (&[f64], &[f64], &[f64]),
+    &TriangleMeshView<'_>,
+    &[f64],
+    f64,
+    bool,
+    (&mut [f64], &mut [f64], &mut [f64]),
+) -> bool;
+
+/// B (T) of a triangle-mesh surface current, evaluated analytically per
+/// triangle. Wraps
+/// [`cfsem::physics::boundary_element::flux_density_triangle_mesh`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_flux_density_triangle_mesh(
+    nodes: *const f64,
+    n_node: usize,
+    triangles: *const i64,
+    n_tri: usize,
+    s: *const f64,
+    rs_obs: *const f64,
+    n_obs: usize,
+    par: i32,
+    b_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let f: TriangleMeshFn = if par != 0 {
+            cfsem::physics::boundary_element::flux_density_triangle_mesh_par
+        } else {
+            cfsem::physics::boundary_element::flux_density_triangle_mesh
+        };
+        triangle_mesh_field(
+            nodes,
+            n_node,
+            triangles,
+            n_tri,
+            s,
+            rs_obs,
+            n_obs,
+            b_out,
+            &|obs, mesh, s, _, _, out| f(obs, mesh, s, out).is_ok(),
+            0.0,
+            false,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// A (V·s/m) of a triangle-mesh surface current. Wraps
+/// [`cfsem::physics::boundary_element::vector_potential_triangle_mesh`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_vector_potential_triangle_mesh(
+    nodes: *const f64,
+    n_node: usize,
+    triangles: *const i64,
+    n_tri: usize,
+    s: *const f64,
+    rs_obs: *const f64,
+    n_obs: usize,
+    par: i32,
+    a_out: *mut f64,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let f: TriangleMeshFn = if par != 0 {
+            cfsem::physics::boundary_element::vector_potential_triangle_mesh_par
+        } else {
+            cfsem::physics::boundary_element::vector_potential_triangle_mesh
+        };
+        triangle_mesh_field(
+            nodes,
+            n_node,
+            triangles,
+            n_tri,
+            s,
+            rs_obs,
+            n_obs,
+            a_out,
+            &|obs, mesh, s, _, _, out| f(obs, mesh, s, out).is_ok(),
+            0.0,
+            false,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// Hierarchical (Barnes-Hut) B (T) of a triangle-mesh surface current.
+/// Approximate, like the linear-filament hierarchical solves. Wraps
+/// [`cfsem::physics::hierarchical::flux_density_triangle_mesh_hierarchical`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_flux_density_triangle_mesh_hierarchical(
+    nodes: *const f64,
+    n_node: usize,
+    triangles: *const i64,
+    n_tri: usize,
+    s: *const f64,
+    rs_obs: *const f64,
+    n_obs: usize,
+    theta: f64,
+    par: i32,
+    skip: i32,
+    b_out: *mut f64,
+) -> i32 {
+    use cfsem::physics::hierarchical::{
+        flux_density_triangle_mesh_hierarchical as full,
+        flux_density_triangle_mesh_hierarchical_with_skip as filtered,
+    };
+    catch_unwind(AssertUnwindSafe(|| {
+        let skip = match decode_skip(skip) {
+            Ok(skip) => skip,
+            Err(code) => return code,
+        };
+        let m = BuildMethod::LongestAxis;
+        triangle_mesh_field(
+            nodes,
+            n_node,
+            triangles,
+            n_tri,
+            s,
+            rs_obs,
+            n_obs,
+            b_out,
+            &|obs, mesh, s, theta, par, out| match skip {
+                None => full(obs, mesh, s, m, theta, par, false, out).is_ok(),
+                Some(k) => filtered(obs, mesh, s, m, theta, par, k, false, out).is_ok(),
+            },
+            theta,
+            par != 0,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// Hierarchical (Barnes-Hut) A (V·s/m) of a triangle-mesh surface current. Wraps
+/// [`cfsem::physics::hierarchical::vector_potential_triangle_mesh_hierarchical`].
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_vector_potential_triangle_mesh_hierarchical(
+    nodes: *const f64,
+    n_node: usize,
+    triangles: *const i64,
+    n_tri: usize,
+    s: *const f64,
+    rs_obs: *const f64,
+    n_obs: usize,
+    theta: f64,
+    par: i32,
+    skip: i32,
+    a_out: *mut f64,
+) -> i32 {
+    use cfsem::physics::hierarchical::{
+        vector_potential_triangle_mesh_hierarchical as full,
+        vector_potential_triangle_mesh_hierarchical_with_skip as filtered,
+    };
+    catch_unwind(AssertUnwindSafe(|| {
+        let skip = match decode_skip(skip) {
+            Ok(skip) => skip,
+            Err(code) => return code,
+        };
+        let m = BuildMethod::LongestAxis;
+        triangle_mesh_field(
+            nodes,
+            n_node,
+            triangles,
+            n_tri,
+            s,
+            rs_obs,
+            n_obs,
+            a_out,
+            &|obs, mesh, s, theta, par, out| match skip {
+                None => full(obs, mesh, s, m, theta, par, false, out).is_ok(),
+                Some(k) => filtered(obs, mesh, s, m, theta, par, k, false, out).is_ok(),
+            },
+            theta,
+            par != 0,
+        )
+    }))
+    .unwrap_or(3)
+}
+
+/// Dense nodal inductance matrix (H) of a triangle mesh, `n_node x n_node`,
+/// symmetric to rounding. Wraps
+/// [`cfsem::physics::boundary_element::triangle_mesh_inductance_matrix`].
+///
+/// `quad_kind` 1..=5 selects the Dunavant rule for well-separated pairs; near and
+/// self pairs always use D5. Anything else returns `5`, as does an overflowing
+/// `n_node * n_node`.
+///
+/// # Safety
+///
+/// All pointers must be non-null and sized as documented in `cfsem.h`.
+#[no_mangle]
+pub unsafe extern "C" fn cfsem_triangle_mesh_inductance_matrix(
+    nodes: *const f64,
+    n_node: usize,
+    triangles: *const i64,
+    n_tri: usize,
+    quad_kind: i32,
+    par: i32,
+    l_out: *mut f64,
+) -> i32 {
+    use cfsem::physics::boundary_element::{
+        triangle_mesh_inductance_matrix, triangle_mesh_inductance_matrix_par, QuadratureKind,
+    };
+    catch_unwind(AssertUnwindSafe(|| {
+        if l_out.is_null() {
+            return 2;
+        }
+        let quad = match quad_kind {
+            1 => QuadratureKind::Dunavant1,
+            2 => QuadratureKind::Dunavant2,
+            3 => QuadratureKind::Dunavant3,
+            4 => QuadratureKind::Dunavant4,
+            5 => QuadratureKind::Dunavant5,
+            _ => return 5,
+        };
+        let Some(n_out) = n_node.checked_mul(n_node) else {
+            return 5;
+        };
+        let mesh = match triangle_mesh_view(nodes, n_node, triangles, n_tri) {
+            Ok(mesh) => mesh,
+            Err(code) => return code,
+        };
+        let out = slice::from_raw_parts_mut(l_out, n_out);
+        let f = if par != 0 {
+            triangle_mesh_inductance_matrix_par
+        } else {
+            triangle_mesh_inductance_matrix
+        };
+        if f(&mesh, quad, out).is_err() {
+            return 1;
+        }
+        0
+    }))
+    .unwrap_or(3)
+}
+
+/// Borrow interleaved nodes / triangles as a mesh view with no copy: the
+/// row-major `(n, 3)` layout cfsem accepts is our interleaved `3 x n`. Invalid
+/// geometry (out-of-range index, zero-area triangle) is status `1`.
+///
+/// # Safety
+///
+/// Non-null pointers must hold `3 * n_node` / `3 * n_tri` elements.
+unsafe fn triangle_mesh_view<'a>(
+    nodes: *const f64,
+    n_node: usize,
+    triangles: *const i64,
+    n_tri: usize,
+) -> Result<TriangleMeshView<'a>, i32> {
+    if nodes.is_null() || triangles.is_null() {
+        return Err(2);
+    }
+    TriangleMeshView::from_row_major_i64(
+        slice::from_raw_parts(nodes, 3 * n_node),
+        slice::from_raw_parts(triangles, 3 * n_tri),
+    )
+    .map_err(|_| 1)
+}
+
+/// Shared body of the triangle-mesh field wrappers: builds the mesh view,
+/// de-interleaves observations, calls `f`, re-interleaves into `out`.
+///
+/// # Safety
+///
+/// Every pointer must be non-null and sized as documented in `cfsem.h`; `out`
+/// must not alias the inputs.
+unsafe fn triangle_mesh_field(
+    nodes: *const f64,
+    n_node: usize,
+    triangles: *const i64,
+    n_tri: usize,
+    s: *const f64,
+    rs_obs: *const f64,
+    n_obs: usize,
+    out: *mut f64,
+    f: TriangleMeshEval<'_>,
+    theta: f64,
+    par: bool,
+) -> i32 {
+    if s.is_null() || rs_obs.is_null() || out.is_null() {
+        return 2;
+    }
+    let mesh = match triangle_mesh_view(nodes, n_node, triangles, n_tri) {
+        Ok(mesh) => mesh,
+        Err(code) => return code,
+    };
+    let s = slice::from_raw_parts(s, n_node);
+    let (xp, yp, zp) = deinterleave3(slice::from_raw_parts(rs_obs, 3 * n_obs), n_obs);
+    let mut ox = vec![0.0_f64; n_obs];
+    let mut oy = vec![0.0_f64; n_obs];
+    let mut oz = vec![0.0_f64; n_obs];
+    if !f(
+        (&xp, &yp, &zp),
+        &mesh,
+        s,
+        theta,
+        par,
+        (&mut ox, &mut oy, &mut oz),
+    ) {
+        return 1;
+    }
+    interleave3(slice::from_raw_parts_mut(out, 3 * n_obs), &ox, &oy, &oz);
     0
 }
 
