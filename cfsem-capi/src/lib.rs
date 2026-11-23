@@ -47,20 +47,15 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
 use std::time::Instant;
 
-// The tree/evaluator pieces are only `pub` via their submodule paths (the
-// mod-level re-exports are crate-private).
-use cfsem::physics::hierarchical::evaluator::{
-    eval, eval_par, scratch_len, scratch_len_par, update_summaries, EvaluationScratch,
-    SourceNodeSummaries,
-};
-use cfsem::physics::hierarchical::kernel::{HierarchicalError, HierarchicalKernel};
 use cfsem::physics::hierarchical::kernels::{
     DipoleTarget, DipoleTargets, LinearFilamentFluxDensityKernel, LinearFilamentFluxDensitySummary,
     LinearFilamentSource, LinearFilamentSources, LinearFilamentVectorPotentialKernel,
     LinearFilamentVectorPotentialSummary,
 };
-use cfsem::physics::hierarchical::tree::{BuildMethod, ClusterTree};
-use cfsem::physics::hierarchical::Skip;
+use cfsem::physics::hierarchical::{
+    eval, eval_par, scratch_len, scratch_len_par, update_summaries, BuildMethod, ClusterTree,
+    EvaluationScratch, HierarchicalError, HierarchicalKernel, Skip, SourceNodeSummaries,
+};
 
 /// Signature shared by the linear-filament field functions in `cfsem` (the
 /// contracted B/A evaluators and their `_matrix` variants): identical argument
